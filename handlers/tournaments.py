@@ -779,25 +779,7 @@ async def callback_admin_tournaments_by_status(callback: CallbackQuery):
 async def callback_admin_tournament_manage(callback: CallbackQuery):
     """Управление турниром."""
     tournament_id = int(callback.data.split("_")[3])
-
-    if not await db.is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа!", show_alert=True)
-        return
-
-    tournament = await db.get_tournament(tournament_id)
-    if not tournament:
-        await callback.answer("Турнир не найден!", show_alert=True)
-        return
-
-    participant_count = await db.get_tournament_participant_count(tournament_id)
-    text = format_tournament_info(tournament, participant_count)
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=kb.admin_tournament_manage(tournament),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await _show_tournament_manage(callback, tournament_id)
 
 
 @router.callback_query(F.data.regexp(r"^admin_t_quickstart_(\d+)$"))
