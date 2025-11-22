@@ -610,6 +610,10 @@ async def callback_match_go(callback: CallbackQuery, state: FSMContext):
         return
 
     match = await db.get_match(match_id)
+    if not match:
+        await callback.answer("Матч не найден!", show_alert=True)
+        return
+
     tournament = await db.get_tournament(match["tournament_id"])
 
     # Запускаем матч
@@ -657,7 +661,10 @@ async def callback_match_go(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer(f"Матч запущен! Уведомлений: {sent}", show_alert=True)
     # Возврат к очереди
-    await callback.message.delete()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass  # Сообщение уже удалено или недоступно
 
 
 # ==================== ЛОББИ ====================
@@ -1262,6 +1269,12 @@ async def callback_mm_link_start(callback: CallbackQuery, state: FSMContext):
 @router.message(ManualMatchLinkStates.waiting_link)
 async def process_mm_link(message: Message, state: FSMContext):
     """Обработка ссылки и создание матча."""
+    # Проверка прав администратора
+    if not await db.is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("Нет доступа!")
+        return
+
     data = await state.get_data()
     tournament_id = data.get("mm_tournament_id")
     p1_id = data.get("mm_p1_id")

@@ -21,12 +21,19 @@ class BracketGenerator:
 
     async def generate(self) -> None:
         """Генерация сетки турнира."""
+        # Проверка на пустой список участников
+        if not self.participants:
+            return
+
         # Перемешиваем участников
         shuffled = self.participants.copy()
         random.shuffle(shuffled)
 
         # Определяем количество раундов
         num_participants = len(shuffled)
+        if num_participants == 1:
+            # Один участник - автоматический победитель, матчи не нужны
+            return
         num_rounds = math.ceil(math.log2(num_participants))
 
         # Количество слотов в первом раунде (степень двойки)

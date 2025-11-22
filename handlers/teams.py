@@ -380,10 +380,14 @@ async def callback_team_dokick(callback: CallbackQuery):
         return
 
     kicked_player = await db.get_player_by_id(member_id)
+    if not kicked_player:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+
     await db.remove_team_member(team_id, member_id)
 
     await callback.answer(
-        f"Игрок {kicked_player['nickname']} удалён из команды!",
+        f"Игрок {escape_html(kicked_player['nickname'])} удалён из команды!",
         show_alert=True
     )
 
@@ -440,10 +444,14 @@ async def callback_team_dotransfer(callback: CallbackQuery):
         return
 
     new_captain = await db.get_player_by_id(new_captain_id)
+    if not new_captain:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+
     await db.transfer_captaincy(team_id, new_captain_id)
 
     await callback.answer(
-        f"Капитанство передано игроку {new_captain['nickname']}!",
+        f"Капитанство передано игроку {escape_html(new_captain['nickname'])}!",
         show_alert=True
     )
 
