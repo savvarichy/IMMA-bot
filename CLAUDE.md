@@ -68,6 +68,7 @@ Single `Database` class with async SQLite connection. All database operations ar
 - `admins` - Additional admin users (beyond config ADMIN_IDS)
 - `channel_settings` - Linked Telegram channel for announcements
 - `tournament_posts` - Published channel posts
+- `bot_settings` - Key-value store for bot settings (e.g., prize_admins)
 
 **Common patterns:**
 ```python
@@ -101,6 +102,7 @@ Organized by domain. Each module creates a `Router` and registers handlers.
 - `MatchResultStates` - entering match scores
 - `MatchLinkStates` - entering server links (queue-based system)
 - `ManualMatchLinkStates` - entering server links (manual match system)
+- `PrizeAdminsStates` - editing prize admin usernames
 
 ### Services (`services/`)
 
@@ -120,12 +122,15 @@ service = NotificationService(bot)
 await service.notify_tournament_start(tournament_id)
 ```
 
-**ChannelService** - Publishes/updates tournament posts:
+**ChannelService** - Publishes/updates tournament posts and results:
 ```python
 from services.channel import get_channel_service
 
 service = get_channel_service()
 success, message = await service.publish_post(tournament_id)
+
+# Publish results when tournament finishes (TOP-3, match history, prize admin contacts)
+success, message = await service.publish_results(tournament_id)
 ```
 
 **SchedulerService** - Automated reminders at 60/30/15 minutes before start:
@@ -263,6 +268,7 @@ except Exception:
 - Admin actions: `admin_action_id` (e.g., `admin_t_open_123`)
 - Manual matches: `mm_action_id` or `mm_action_id1_id2` (e.g., `mm_control_1`, `mm_go_1_2_3`)
 - Complex: `action_subaction_id1_id2` (e.g., `match_set_1_16_14_1`)
+- Prize admins: `admin_prize_admins`, `edit_prize_admins`, `clear_prize_admins`
 
 ### Text Formatting
 
@@ -271,6 +277,22 @@ except Exception:
 - Format functions in `utils.py` for consistent display
 
 ## Common Tasks
+
+### Bot Settings
+
+The bot uses a key-value `bot_settings` table for configuration:
+
+```python
+# Get/set arbitrary settings
+value = await db.get_setting("key_name")
+await db.set_setting("key_name", "value")
+
+# Prize admin contacts (shown in tournament results)
+admins = await db.get_prize_admins()  # Returns list[str]
+await db.set_prize_admins(["admin1", "admin2"])
+```
+
+Prize admins are configured via Admin Panel → Other → Prize Admins. They are displayed in channel results post with a warning not to trust other contacts.
 
 ### Check if user is admin
 ```python
