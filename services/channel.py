@@ -235,6 +235,137 @@ class ChannelService:
             await db.delete_tournament_post(tournament_id)
             return True, "Запись удалена"
 
+    async def generate_results_text(
+        self,
+        tournament: dict,
+        standings: list[dict],
+        matches: list[dict],
+        participants_names: dict[int, str]
+    ) -> str:
+        """Генерация текста результатов турнира для канала."""
+        format_name = config.TOURNAMENT_FORMATS.get(
+            tournament["format"], {}
+        ).get("name", tournament["format"])
+
+        prize_text = format_prizes(tournament)
+
+        # Получаем призы для отображения
+        prizes = tournament.get("prizes", []) or []
+        if isinstance(prizes, str):
+            import json
+            try:
+                prizes = json.loads(prizes)
+            except Exception:
+                prizes = []
+        if isinstance(prizes, dict):
+            prizes = [prizes.get(str(i + 1), "") for i in range(len(prizes))]
+
+        text = f"""🏆 <b>ТУРНИР ЗАВЕРШЁН!</b>
+
+📛 <b>{tournament['name']}</b>
+🎮 Формат: {format_name}
+
+📊 <b>РЕЗУЛЬТАТЫ:</b>
+
+"""
+        # Медали для мест
+        place_medals = ["🥇", "🥈", "🥉"]
+
+        for i, s in enumerate(standings):
+            pid = s["participant_id"]
+            name = participants_names.get(pid, f"ID:{pid}")
+            wins = s.get("wins", 0)
+            losses = s.get("losses", 0)
+
+            if i < 3:
+                place_icon = place_medals[i]
+            else:
+                place_icon = f"{i + 1}."
+
+            prize_info = ""
+            if i < len(prizes) and prizes[i]:
+                prize_info = f" — <b>{prizes[i]}</b>"
+
+            text += f"{place_icon} {name} ({wins}W/{losses}L){prize_info}\n"
+
+        # История матчей
+        completed_matches = [m for m in matches if m["status"] == "completed"]
+        if completed_matches:
+            text += f"\n⚔️ <b>ИСТОРИЯ МАТЧЕЙ ({len(completed_matches)}):</b>\n\n"
+
+            for match in completed_matches:
+                p1_name = participants_names.get(match["participant1_id"], "?")
+                p2_name = participants_names.get(match["participant2_id"], "?")
+                winner_id = match.get("winner_id")
+
+                # Выделяем победителя
+                if winner_id == match["participant1_id"]:
+                    result_text = f"<b>{p1_name}</b> {match['score1']}:{match['score2']} {p2_name}"
+                else:
+                    result_text = f"{p1_name} {match['score1']}:{match['score2']} <b>{p2_name}</b>"
+
+                text += f"• {result_text}\n"
+
+        text += f"\n🏁 <b>IMMA Championship</b>"
+
+        return text
+
+    async def publish_results(self, tournament_id: int) -> tuple[bool, str]:
+        """
+        Обновить пост в канале результатами турнира.
+        Возвращает (success, message).
+        """
+        # Получаем пост
+        post = await db.get_tournament_post(tournament_id)
+        if not post:
+            return False, "Пост не найден в канале"
+
+        # Получаем турнир
+        tournament = await db.get_tournament(tournament_id)
+        if not tournament:
+            return False, "Турнир не найден"
+
+        # Получаем статистику участников
+        standings = await db.get_tournament_standings(tournament_id)
+        sorted_standings = sorted(
+            standings,
+            key=lambda x: (-x.get("wins", 0), x.get("losses", 0))
+        )
+
+        # Получаем имена участников
+        participants_names = {}
+        for s in sorted_standings:
+            if s["participant_type"] == "player":
+                p = await db.get_player_by_id(s["participant_id"])
+                participants_names[s["participant_id"]] = p["nickname"] if p else f"ID:{s['participant_id']}"
+            else:
+                t = await db.get_team(s["participant_id"])
+                participants_names[s["participant_id"]] = t["name"] if t else f"ID:{s['participant_id']}"
+
+        # Получаем матчи
+        matches = await db.get_tournament_matches(tournament_id)
+
+        # Генерируем текст результатов
+        text = await self.generate_results_text(
+            tournament, sorted_standings, matches, participants_names
+        )
+
+        try:
+            await self.bot.edit_message_text(
+                text,
+                chat_id=post["channel_id"],
+                message_id=post["message_id"],
+                parse_mode="HTML",
+                reply_markup=None  # Убираем кнопку регистрации
+            )
+            return True, "Результаты опубликованы в канал!"
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                return True, "Изменений нет"
+            return False, f"Ошибка: {e.message}"
+        except Exception as e:
+            return False, f"Ошибка обновления: {str(e)}"
+
 
 # Глобальный экземпляр (инициализируется в bot.py)
 channel_service: Optional[ChannelService] = None

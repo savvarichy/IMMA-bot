@@ -1428,10 +1428,11 @@ class Keyboards:
 
             icon = status_icons.get(p.get("status", "ready"), "")
             wins = p.get("wins", 0)
+            losses = p.get("losses", 0)
             name = p.get("name", f"ID:{p['participant_id']}")
 
             builder.button(
-                text=f"{icon} {name} ({wins}W)",
+                text=f"{icon} {name} ({wins}W/{losses}L)",
                 callback_data=f"mm_{action}_{tournament_id}_{p['participant_id']}"
             )
 

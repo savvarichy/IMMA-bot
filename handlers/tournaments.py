@@ -890,8 +890,19 @@ async def callback_admin_finish_tournament(callback: CallbackQuery):
     completed_count = len([m for m in completed_matches if m["status"] == "completed"])
     text += f"\n<b>Всего матчей:</b> {completed_count}"
 
+    # Публикуем результаты в канал
+    channel_result = ""
+    try:
+        from services.channel import get_channel_service
+        channel_service = get_channel_service()
+        if channel_service:
+            success, msg = await channel_service.publish_results(tournament_id)
+            channel_result = f"\n\n{Emoji.SEND} Канал: {msg}"
+    except Exception as e:
+        channel_result = f"\n\n{Emoji.WARNING} Канал: ошибка - {str(e)}"
+
     await callback.message.edit_text(
-        text,
+        text + channel_result,
         reply_markup=kb.back_button("admin_tournaments"),
         parse_mode="HTML"
     )
