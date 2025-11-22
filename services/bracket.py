@@ -140,18 +140,10 @@ class BracketGenerator:
 
                 match_number += 1
 
-            # Создаём матчи следующего раунда (если не финал)
+            # Переходим к следующему раунду
+            # next_round_participants содержит победителей bye-матчей и None для реальных матчей
             if round_num < num_rounds:
-                current_round_participants = [None] * len(next_round_participants)
-                # Победители из предыдущего раунда будут добавлены по мере игры
-
-        # Создаём пустые матчи для оставшихся раундов
-        matches_in_round = len(first_round_participants) // 2
-        for round_num in range(2, num_rounds + 1):
-            matches_in_round //= 2
-            for i in range(matches_in_round):
-                # Матчи уже созданы выше с bye, создаём только если нужно
-                pass
+                current_round_participants = next_round_participants
 
 
 async def get_bracket_display(tournament_id: int) -> dict:

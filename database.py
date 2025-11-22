@@ -435,13 +435,8 @@ class Database:
                 rows = await cursor.fetchall()
                 return [dict(r) for r in rows]
 
-    async def ban_player(self, telegram_id: int, reason: str) -> None:
-        """Забанить игрока."""
-        await self.update_player(telegram_id, is_banned=1, ban_reason=reason)
-
-    async def unban_player(self, telegram_id: int) -> None:
-        """Разбанить игрока."""
-        await self.update_player(telegram_id, is_banned=0, ban_reason=None)
+    # NOTE: ban_player and unban_player methods are defined below (lines ~1511, ~1532)
+    # using the player_bans table for more detailed ban tracking
 
     async def increment_player_stats(
         self, telegram_id: int, won: bool = False, missed_checkin: bool = False
@@ -2011,8 +2006,18 @@ class Database:
         if not match or match["status"] != "active":
             return False
 
-        # Определяем проигравшего
-        loser_id = match["participant2_id"] if winner_id == match["participant1_id"] else match["participant1_id"]
+        # Проверяем что оба участника есть
+        if not match.get("participant1_id") or not match.get("participant2_id"):
+            return False
+
+        # Определяем проигравшего с валидацией winner_id
+        if winner_id == match["participant1_id"]:
+            loser_id = match["participant2_id"]
+        elif winner_id == match["participant2_id"]:
+            loser_id = match["participant1_id"]
+        else:
+            # winner_id не является участником матча
+            return False
 
         # Обновляем матч
         await self.set_match_result(match_id, score1, score2, winner_id)

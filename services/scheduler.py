@@ -48,6 +48,10 @@ class SchedulerService:
         if isinstance(start_time, str):
             start_time = datetime.fromisoformat(start_time)
 
+        # Убираем timezone info для консистентности
+        if start_time.tzinfo is not None:
+            start_time = start_time.replace(tzinfo=None)
+
         now = datetime.now()
 
         # Напоминание за 60 минут
@@ -84,7 +88,8 @@ class SchedulerService:
             )
 
         # Автоматический check-in (если настроен)
-        if tournament["checkin_hours"] > 0:
+        checkin_hours = tournament.get("checkin_hours") or 0
+        if checkin_hours > 0:
             checkin_time = start_time - timedelta(hours=tournament["checkin_hours"])
             if checkin_time > now:
                 self.scheduler.add_job(

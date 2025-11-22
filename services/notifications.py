@@ -211,7 +211,7 @@ class NotificationService:
                 sent += 1
 
         # Уведомляем остальных участников
-        await self._notify_tournament_participants(
+        sent += await self._notify_tournament_participants(
             tournament_id,
             all_participants_text,
             exclude_ids=winner_telegram_ids

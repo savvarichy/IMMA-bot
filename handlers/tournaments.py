@@ -2561,15 +2561,19 @@ async def callback_admin_edit_date(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("calendar_day_"), EditTournamentStates.waiting_date)
 async def callback_edit_calendar_day(callback: CallbackQuery, state: FSMContext):
     """Выбор дня для редактирования."""
-    date_str = callback.data.replace("calendar_day_", "")
-    selected_date = datetime.strptime(date_str, "%Y-%m-%d")
+    # Парсим дату из формата calendar_day_YYYY_MM_DD
+    parts = callback.data.split("_")
+    year = int(parts[2])
+    month = int(parts[3])
+    day = int(parts[4])
+    selected_date = datetime(year, month, day)
 
     await state.update_data(edit_date=selected_date)
     await state.set_state(EditTournamentStates.waiting_time)
 
     await callback.message.edit_text(
         f"{Emoji.CLOCK} <b>Выберите время:</b>",
-        reply_markup=kb.time_select(),
+        reply_markup=kb.time_select(selected_date),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -2578,8 +2582,11 @@ async def callback_edit_calendar_day(callback: CallbackQuery, state: FSMContext)
 @router.callback_query(F.data.startswith("t_time_"), EditTournamentStates.waiting_time)
 async def callback_edit_time(callback: CallbackQuery, state: FSMContext):
     """Выбор времени для редактирования."""
-    time_str = callback.data.replace("t_time_", "")
-    hour, minute = map(int, time_str.split("_"))
+    # Парсим из формата t_time_YYYY-MM-DD_HH:MM
+    parts = callback.data.split("_")
+    # parts = ["t", "time", "YYYY-MM-DD", "HH:MM"]
+    time_str = parts[3]  # "HH:MM"
+    hour, minute = map(int, time_str.split(":"))
 
     data = await state.get_data()
     selected_date = data["edit_date"]
