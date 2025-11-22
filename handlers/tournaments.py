@@ -830,6 +830,11 @@ async def callback_admin_finish_tournament(callback: CallbackQuery):
         except Exception:
             prizes = []
 
+    # Конвертируем dict в list если нужно
+    if isinstance(prizes, dict):
+        # Призы могут быть {"1": "приз1", "2": "приз2"} - конвертируем в список
+        prizes = [prizes.get(str(i + 1), "") for i in range(len(prizes))]
+
     # Обновляем статистику победителя (1 место)
     if sorted_standings:
         winner = sorted_standings[0]
