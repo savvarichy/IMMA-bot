@@ -266,40 +266,22 @@ async def callback_match_set_score(callback: CallbackQuery, state: FSMContext):
     match = await db.get_match(match_id)
     winner_id = match["participant1_id"] if actual_winner_pos == 1 else match["participant2_id"]
 
-    # Сохраняем результат
-    await db.set_match_result(match_id, score1, score2, winner_id)
-
-    # Проводим победителя в следующий раунд
-    await advance_winner(match, winner_id)
+    # Используем complete_manual_match который обновляет статусы участников
+    success = await db.complete_manual_match(match_id, winner_id, score1, score2)
 
     await state.clear()
 
-    # Проверяем, завершён ли турнир
-    tournament = await db.get_tournament(match["tournament_id"])
-    pending = await db.get_pending_matches(match["tournament_id"])
-
-    if not pending:
-        # Турнир завершён
-        await db.update_tournament_status(match["tournament_id"], "finished")
-
-        # Обновляем статистику победителя
-        if tournament["format"] == "1v1":
-            winner_player = await db.get_player_by_id(winner_id)
-            await db.increment_player_stats(winner_player["telegram_id"], won=True)
-        else:
-            await db.update_team(winner_id, tournaments_won=tournament.get("tournaments_won", 0) + 1)
-
+    if success:
         await callback.message.edit_text(
-            f"{Emoji.TROPHY} <b>Турнир завершён!</b>\n\n"
-            f"Победитель определён. Счёт: {score1}:{score2}",
-            reply_markup=kb.back_button("admin"),
+            f"{Emoji.CHECK} Результат сохранён!\n\n"
+            f"Счёт: {score1}:{score2}",
+            reply_markup=kb.back_button(f"mm_control_{match['tournament_id']}"),
             parse_mode="HTML"
         )
     else:
         await callback.message.edit_text(
-            f"{Emoji.CHECK} Результат сохранён!\n\n"
-            f"Счёт: {score1}:{score2}",
-            reply_markup=kb.back_button(f"admin_t_manage_{match['tournament_id']}"),
+            f"{Emoji.CROSS} Ошибка сохранения результата!",
+            reply_markup=kb.back_button(f"mm_control_{match['tournament_id']}"),
             parse_mode="HTML"
         )
 
@@ -371,21 +353,26 @@ async def process_custom_score(message: Message, state: FSMContext):
     else:
         winner_id = match["participant2_id"]
 
-    # Сохраняем результат
-    await db.set_match_result(match_id, score1, score2, winner_id)
-
-    # Проводим победителя
-    await advance_winner(match, winner_id)
-
     tournament_id = match["tournament_id"]
+
+    # Используем complete_manual_match который обновляет статусы участников
+    success = await db.complete_manual_match(match_id, winner_id, score1, score2)
+
     await state.clear()
 
-    await message.answer(
-        f"{Emoji.CHECK} Результат сохранён!\n"
-        f"Счёт: {score1}:{score2}",
-        reply_markup=kb.back_button(f"admin_t_manage_{tournament_id}"),
-        parse_mode="HTML"
-    )
+    if success:
+        await message.answer(
+            f"{Emoji.CHECK} Результат сохранён!\n"
+            f"Счёт: {score1}:{score2}",
+            reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer(
+            f"{Emoji.CROSS} Ошибка сохранения результата!",
+            reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+            parse_mode="HTML"
+        )
 
 
 async def advance_winner(match: dict, winner_id: int) -> None:
