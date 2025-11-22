@@ -262,6 +262,13 @@ class Database:
                 UNIQUE(tournament_id, participant_id, participant_type)
             );
 
+            -- Настройки бота
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
             -- Индексы
             CREATE INDEX IF NOT EXISTS idx_players_telegram ON players(telegram_id);
             CREATE INDEX IF NOT EXISTS idx_teams_captain ON teams(captain_id);
@@ -1180,6 +1187,39 @@ class Database:
         """Удалить привязку канала."""
         await self.conn.execute("DELETE FROM channel_settings")
         await self.conn.commit()
+
+    # ==================== НАСТРОЙКИ БОТА ====================
+
+    async def get_setting(self, key: str) -> Optional[str]:
+        """Получить настройку бота."""
+        async with self.conn.execute(
+            "SELECT value FROM bot_settings WHERE key = ?", (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["value"] if row else None
+
+    async def set_setting(self, key: str, value: str) -> None:
+        """Установить настройку бота."""
+        from datetime import datetime
+        await self.conn.execute(
+            """INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
+               VALUES (?, ?, ?)""",
+            (key, value, datetime.now())
+        )
+        await self.conn.commit()
+
+    async def get_prize_admins(self) -> list[str]:
+        """Получить список администраторов призов."""
+        value = await self.get_setting("prize_admins")
+        if not value:
+            return []
+        # Хранится как "admin1,admin2,admin3"
+        return [a.strip() for a in value.split(",") if a.strip()]
+
+    async def set_prize_admins(self, admins: list[str]) -> None:
+        """Установить список администраторов призов."""
+        value = ",".join(admins)
+        await self.set_setting("prize_admins", value)
 
     # ==================== ПОСТЫ ТУРНИРОВ ====================
 

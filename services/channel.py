@@ -314,7 +314,15 @@ class ChannelService:
 
             text += "</blockquote>"
 
-        text += f"\n🏁 <b>IMMA Championship</b>"
+        # Добавляем информацию об админах призов
+        prize_admins = await db.get_prize_admins()
+        if prize_admins:
+            admins_list = ", ".join(f"@{a}" for a in prize_admins)
+            text += f"\n\n💰 <b>Получение призов:</b>\n"
+            text += f"С вами свяжется: {admins_list}\n"
+            text += f"⚠️ <i>Не доверяйте другим контактам!</i>"
+
+        text += f"\n\n🏁 <b>IMMA Championship</b>"
 
         return text
 

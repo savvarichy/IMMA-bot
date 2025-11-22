@@ -30,6 +30,11 @@ class EditProfileStates(StatesGroup):
     waiting_contact = State()
 
 
+class PrizeAdminsStates(StatesGroup):
+    """Состояния редактирования админов призов."""
+    waiting_usernames = State()
+
+
 # ==================== КОМАНДЫ ====================
 
 @router.message(CommandStart(deep_link=True))
@@ -841,6 +846,113 @@ async def callback_admin_logs(callback: CallbackQuery):
     await callback.message.edit_text(
         text,
         reply_markup=kb.back_button("admin_other"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_prize_admins")
+async def callback_admin_prize_admins(callback: CallbackQuery):
+    """Настройка админов призов."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    admins = await db.get_prize_admins()
+
+    text = f"<b>{Emoji.GIFT} Админы призов</b>\n\n"
+    text += "Эти контакты будут показаны победителям турнира для получения призов.\n\n"
+
+    if admins:
+        text += "<b>Текущие админы:</b>\n"
+        for admin in admins:
+            text += f"• @{admin}\n"
+    else:
+        text += "<i>Админы не указаны</i>\n"
+
+    text += "\nНажмите «Изменить» чтобы задать список."
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.prize_admins_menu(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "edit_prize_admins")
+async def callback_edit_prize_admins(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование админов призов."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    text = f"<b>{Emoji.EDIT} Редактирование админов призов</b>\n\n"
+    text += "Отправьте username админов через запятую или каждый с новой строки.\n\n"
+    text += "<i>Пример: admin1, admin2, admin3</i>\n"
+    text += "<i>Или:</i>\n<i>admin1</i>\n<i>admin2</i>\n\n"
+    text += "Символ @ в начале необязателен."
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.back_button("admin_prize_admins"),
+        parse_mode="HTML"
+    )
+    await state.set_state(PrizeAdminsStates.waiting_usernames)
+    await callback.answer()
+
+
+@router.message(PrizeAdminsStates.waiting_usernames)
+async def process_prize_admins_input(message: Message, state: FSMContext):
+    """Обработка ввода админов призов."""
+    if not await db.is_admin(message.from_user.id):
+        return
+
+    text = message.text.strip()
+
+    # Парсим username-ы
+    if "," in text:
+        usernames = [u.strip() for u in text.split(",")]
+    else:
+        usernames = [u.strip() for u in text.split("\n")]
+
+    # Убираем @ и пустые строки
+    usernames = [u.lstrip("@") for u in usernames if u.strip()]
+
+    if not usernames:
+        await message.answer(
+            f"{Emoji.WARNING} Не найдено ни одного username. Попробуйте ещё раз.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Сохраняем
+    await db.set_prize_admins(usernames)
+    await state.clear()
+
+    text = f"{Emoji.CHECK} <b>Админы призов сохранены!</b>\n\n"
+    for u in usernames:
+        text += f"• @{u}\n"
+
+    await message.answer(
+        text,
+        reply_markup=kb.back_button("admin_prize_admins"),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "clear_prize_admins")
+async def callback_clear_prize_admins(callback: CallbackQuery):
+    """Очистить список админов призов."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await db.set_prize_admins([])
+
+    await callback.message.edit_text(
+        f"{Emoji.CHECK} Список админов призов очищен.",
+        reply_markup=kb.back_button("admin_prize_admins"),
         parse_mode="HTML"
     )
     await callback.answer()

@@ -519,10 +519,33 @@ class Keyboards:
             callback_data="admin_logs"
         )
         builder.button(
+            text=f"{Emoji.GIFT} Админы призов",
+            callback_data="admin_prize_admins"
+        )
+        builder.button(
             text=f"{Emoji.BACK} Назад",
             callback_data="admin"
         )
-        builder.adjust(2, 2, 2, 1)
+        builder.adjust(2, 2, 2, 1, 1)
+        return builder.as_markup()
+
+    @staticmethod
+    def prize_admins_menu() -> InlineKeyboardMarkup:
+        """Меню настройки админов призов."""
+        builder = InlineKeyboardBuilder()
+        builder.button(
+            text=f"{Emoji.EDIT} Изменить",
+            callback_data="edit_prize_admins"
+        )
+        builder.button(
+            text=f"{Emoji.CANCEL} Очистить",
+            callback_data="clear_prize_admins"
+        )
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data="admin_other"
+        )
+        builder.adjust(2, 1)
         return builder.as_markup()
 
     @staticmethod
