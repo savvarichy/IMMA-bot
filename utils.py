@@ -13,6 +13,48 @@ from config import config
 logger = logging.getLogger(__name__)
 
 
+async def check_channel_subscription(bot, user_id: int) -> tuple[bool, Optional[str]]:
+    """
+    Проверить подписку пользователя на канал.
+
+    Returns:
+        (is_subscribed, channel_link) - если канал не привязан, возвращает (True, None)
+    """
+    from database import db
+    from aiogram.exceptions import TelegramBadRequest
+
+    channel = await db.get_channel()
+    if not channel:
+        # Канал не привязан - пропускаем проверку
+        return True, None
+
+    channel_id = channel["channel_id"]
+    channel_username = channel.get("channel_username")
+
+    # Формируем ссылку на канал
+    if channel_username:
+        channel_link = f"https://t.me/{channel_username.lstrip('@')}"
+    else:
+        # Для приватных каналов - ссылка через ID не работает
+        channel_link = None
+
+    try:
+        member = await bot.get_chat_member(channel_id, user_id)
+        # Проверяем статус - подписан или нет
+        if member.status in ("creator", "administrator", "member"):
+            return True, channel_link
+        else:
+            return False, channel_link
+    except TelegramBadRequest as e:
+        # Ошибка - скорее всего бот не админ в канале или пользователь не взаимодействовал
+        logger.warning(f"Не удалось проверить подписку {user_id}: {e}")
+        # В случае ошибки - пропускаем (даём доступ)
+        return True, channel_link
+    except Exception as e:
+        logger.error(f"Ошибка проверки подписки: {e}")
+        return True, channel_link
+
+
 def generate_invite_code() -> str:
     """Генерация инвайт-кода команды (формат: IMMA-XXXX)."""
     chars = string.ascii_uppercase + string.digits

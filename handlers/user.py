@@ -9,7 +9,8 @@ from database import db
 from keyboards import kb, Emoji
 from utils import (
     validate_nickname, validate_steam_link, validate_contact,
-    format_player_info, format_tournament_info, escape_html, extract_steam_id
+    format_player_info, format_tournament_info, escape_html, extract_steam_id,
+    check_channel_subscription
 )
 from config import config
 
@@ -45,6 +46,23 @@ async def cmd_start_deep_link(message: Message, command: CommandObject):
     if not args or not args.startswith("reg_"):
         # Если не deep link для регистрации - обычный start
         await cmd_start(message)
+        return
+
+    # Проверка подписки на канал
+    is_subscribed, channel_link = await check_channel_subscription(
+        message.bot, message.from_user.id
+    )
+    if not is_subscribed:
+        text = (
+            f"{Emoji.LOCK} <b>Требуется подписка</b>\n\n"
+            f"Для использования бота необходимо подписаться на наш канал.\n\n"
+            f"Подпишитесь и нажмите кнопку «Я подписался»."
+        )
+        await message.answer(
+            text,
+            reply_markup=kb.subscription_required(channel_link),
+            parse_mode="HTML"
+        )
         return
 
     # Парсим tournament_id
@@ -115,6 +133,23 @@ async def cmd_start_deep_link(message: Message, command: CommandObject):
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     """Обработчик команды /start."""
+    # Проверка подписки на канал
+    is_subscribed, channel_link = await check_channel_subscription(
+        message.bot, message.from_user.id
+    )
+    if not is_subscribed:
+        text = (
+            f"{Emoji.LOCK} <b>Требуется подписка</b>\n\n"
+            f"Для использования бота необходимо подписаться на наш канал.\n\n"
+            f"Подпишитесь и нажмите кнопку «Я подписался»."
+        )
+        await message.answer(
+            text,
+            reply_markup=kb.subscription_required(channel_link),
+            parse_mode="HTML"
+        )
+        return
+
     player = await db.get_player(message.from_user.id)
 
     if player:
@@ -218,6 +253,25 @@ async def cmd_admin(message: Message):
 async def callback_main_menu(callback: CallbackQuery, state: FSMContext):
     """Возврат в главное меню."""
     await state.clear()
+
+    # Проверка подписки на канал
+    is_subscribed, channel_link = await check_channel_subscription(
+        callback.bot, callback.from_user.id
+    )
+    if not is_subscribed:
+        text = (
+            f"{Emoji.LOCK} <b>Требуется подписка</b>\n\n"
+            f"Для использования бота необходимо подписаться на наш канал.\n\n"
+            f"Подпишитесь и нажмите кнопку «Я подписался»."
+        )
+        await callback.message.edit_text(
+            text,
+            reply_markup=kb.subscription_required(channel_link),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+        return
+
     player = await db.get_player(callback.from_user.id)
     is_registered = player is not None
 
@@ -242,6 +296,37 @@ async def callback_main_menu(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "check_subscription")
+async def callback_check_subscription(callback: CallbackQuery):
+    """Проверка подписки на канал."""
+    is_subscribed, channel_link = await check_channel_subscription(
+        callback.bot, callback.from_user.id
+    )
+
+    if is_subscribed:
+        # Подписан - показываем главное меню
+        player = await db.get_player(callback.from_user.id)
+        is_registered = player is not None
+
+        text = f"{Emoji.HOME} <b>Главное меню</b>\n\n"
+        if is_registered:
+            text += f"Привет, <b>{escape_html(player['nickname'])}</b>!\nВыбери действие:"
+        else:
+            text += "Для участия в турнирах необходимо пройти регистрацию."
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=kb.main_menu(is_registered),
+            parse_mode="HTML"
+        )
+        await callback.answer(f"{Emoji.CHECK} Подписка подтверждена!")
+    else:
+        await callback.answer(
+            f"{Emoji.CROSS} Вы не подписаны на канал!",
+            show_alert=True
+        )
 
 
 # ==================== РЕГИСТРАЦИЯ ====================
@@ -808,21 +893,93 @@ async def callback_admin_admins(callback: CallbackQuery):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    admins = await db.get_all_admins()
+    text = f"<b>{Emoji.SHIELD} Администраторы</b>\n\n"
 
-    text = f"<b>{Emoji.SHIELD} Админы</b>\n\n"
-    if admins:
-        for a in admins:
-            text += f"• ID: {a['telegram_id']}\n"
+    # Владелец
+    text += f"<b>{Emoji.CROWN} Владелец:</b>\n"
+    owner_info = await _get_admin_info(callback.bot, config.OWNER_ID)
+    text += f"  {owner_info}\n\n"
+
+    # Админы из конфига
+    config_admins = [a for a in config.ADMIN_IDS if a != config.OWNER_ID]
+    if config_admins:
+        text += f"<b>{Emoji.GEAR} Админы (из конфига):</b>\n"
+        for admin_id in config_admins:
+            admin_info = await _get_admin_info(callback.bot, admin_id)
+            text += f"  {admin_info}\n"
+        text += "\n"
+
+    # Админы из базы данных
+    db_admins = await db.get_all_admins()
+    # Фильтруем тех, кто уже есть в конфиге
+    db_admins_filtered = [
+        a for a in db_admins
+        if a["telegram_id"] not in config.ADMIN_IDS
+        and a["telegram_id"] != config.OWNER_ID
+    ]
+
+    if db_admins_filtered:
+        text += f"<b>{Emoji.PLUS} Добавленные админы:</b>\n"
+        for a in db_admins_filtered:
+            admin_info = await _get_admin_info(callback.bot, a["telegram_id"])
+            text += f"  {admin_info}\n"
     else:
-        text += "Нет админов в базе."
+        text += f"<i>Нет добавленных админов</i>\n"
 
     await callback.message.edit_text(
         text,
-        reply_markup=kb.back_button("admin_other"),
+        reply_markup=kb.admin_list(db_admins_filtered, config.OWNER_ID),
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+async def _get_admin_info(bot, telegram_id: int) -> str:
+    """Получить информацию об админе для отображения."""
+    # Сначала ищем в таблице players
+    player = await db.get_player(telegram_id)
+    if player:
+        nickname = escape_html(player["nickname"])
+        username = f"@{player['username']}" if player.get("username") else ""
+        if username:
+            return f"{nickname} ({username}, ID: {telegram_id})"
+        return f"{nickname} (ID: {telegram_id})"
+
+    # Пробуем получить через Telegram API
+    try:
+        user = await bot.get_chat(telegram_id)
+        if user.username:
+            return f"@{user.username} (ID: {telegram_id})"
+        elif user.first_name:
+            return f"{escape_html(user.first_name)} (ID: {telegram_id})"
+    except Exception:
+        pass
+
+    return f"ID: {telegram_id}"
+
+
+@router.callback_query(F.data.regexp(r"^admin_remove_(\d+)$"))
+async def callback_admin_remove(callback: CallbackQuery):
+    """Удаление админа из БД."""
+    if callback.from_user.id != config.OWNER_ID:
+        await callback.answer("Только владелец может удалять админов!", show_alert=True)
+        return
+
+    admin_id = int(callback.data.split("_")[2])
+
+    # Нельзя удалить админа из конфига
+    if admin_id in config.ADMIN_IDS or admin_id == config.OWNER_ID:
+        await callback.answer(
+            "Этого админа нельзя удалить через бота (он в конфиге)!",
+            show_alert=True
+        )
+        return
+
+    await db.remove_admin(admin_id)
+    await callback.answer(f"{Emoji.CHECK} Админ удалён!", show_alert=True)
+
+    # Обновляем список
+    await callback_admin_admins(callback)
 
 
 @router.callback_query(F.data == "admin_logs")

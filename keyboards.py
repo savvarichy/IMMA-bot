@@ -108,6 +108,46 @@ class Keyboards:
         return builder.as_markup()
 
     @staticmethod
+    def subscription_required(channel_link: str = None) -> InlineKeyboardMarkup:
+        """Клавиатура для требования подписки на канал."""
+        builder = InlineKeyboardBuilder()
+
+        if channel_link:
+            builder.button(
+                text=f"{Emoji.SEND} Перейти в канал",
+                url=channel_link
+            )
+
+        builder.button(
+            text=f"{Emoji.CHECK} Я подписался",
+            callback_data="check_subscription"
+        )
+
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def admin_list(db_admins: list, owner_id: int) -> InlineKeyboardMarkup:
+        """Клавиатура списка админов с кнопками удаления."""
+        builder = InlineKeyboardBuilder()
+
+        # Кнопки удаления только для админов из БД (не из конфига)
+        for admin in db_admins:
+            if admin["telegram_id"] != owner_id:
+                builder.button(
+                    text=f"{Emoji.CROSS} Удалить ID: {admin['telegram_id']}",
+                    callback_data=f"admin_remove_{admin['telegram_id']}"
+                )
+
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data="admin_other"
+        )
+
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
     def back_button(callback_data: str = "main_menu") -> InlineKeyboardMarkup:
         """Кнопка назад."""
         return InlineKeyboardMarkup(inline_keyboard=[
