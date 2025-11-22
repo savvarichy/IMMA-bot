@@ -63,6 +63,8 @@ class BroadcastStates(StatesGroup):
 
 async def _show_tournament_manage(callback: CallbackQuery, tournament_id: int) -> None:
     """Показать меню управления турниром (админ)."""
+    from aiogram.exceptions import TelegramBadRequest
+
     if not await db.is_admin(callback.from_user.id):
         await callback.answer("Нет доступа!", show_alert=True)
         return
@@ -75,11 +77,15 @@ async def _show_tournament_manage(callback: CallbackQuery, tournament_id: int) -
     participant_count = await db.get_tournament_participant_count(tournament_id)
     text = format_tournament_info(tournament, participant_count)
 
-    await callback.message.edit_text(
-        text,
-        reply_markup=kb.admin_tournament_manage(tournament),
-        parse_mode="HTML"
-    )
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=kb.admin_tournament_manage(tournament),
+            parse_mode="HTML"
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
     await callback.answer()
 
 
@@ -138,13 +144,18 @@ async def _show_tournament_view(callback: CallbackQuery, tournament_id: int) -> 
     if team_status_text:
         text += team_status_text
 
-    await callback.message.edit_text(
-        text,
-        reply_markup=kb.tournament_view(
-            tournament, is_registered, can_register, is_checkin, checked_in, is_in_reserve
-        ),
-        parse_mode="HTML"
-    )
+    from aiogram.exceptions import TelegramBadRequest
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=kb.tournament_view(
+                tournament, is_registered, can_register, is_checkin, checked_in, is_in_reserve
+            ),
+            parse_mode="HTML"
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
     await callback.answer()
 
 
