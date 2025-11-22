@@ -66,6 +66,9 @@ class ChannelService:
         # Время до начала
         time_until = get_time_until(tournament["start_time"])
 
+        # Для командных форматов показываем "Команды"
+        participant_label = "Команды" if tournament["format"] != "1v1" else "Участники"
+
         text = f"""🏆 <b>IMMA Championship</b>
 
 📛 <b>{tournament['name']}</b>
@@ -73,7 +76,7 @@ class ChannelService:
 🎮 Формат: <b>{format_name}</b>
 🗺️ Карты: {maps_text}
 
-👥 Участники: <b>{participant_count}/{tournament['max_participants']}</b>
+👥 {participant_label}: <b>{participant_count}/{tournament['max_participants']}</b>
 {progress}
 
 🎁 Призы:

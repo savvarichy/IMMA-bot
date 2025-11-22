@@ -613,7 +613,7 @@ class Keyboards:
                 callback_data=f"admin_t_cancel_{tournament['id']}"
             )
 
-        if status == "draft":
+        if status in ("draft", "cancelled"):
             builder.button(
                 text=f"{Emoji.TRASH} Удалить",
                 callback_data=f"admin_t_delete_{tournament['id']}"
@@ -1102,6 +1102,62 @@ class Keyboards:
         builder.button(
             text=f"{Emoji.BACK} Назад",
             callback_data="admin_players"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    # ==================== РАССЫЛКА ====================
+
+    @staticmethod
+    def broadcast_menu(tournament_id: int) -> InlineKeyboardMarkup:
+        """Меню типа рассылки."""
+        builder = InlineKeyboardBuilder()
+        builder.button(
+            text=f"{Emoji.BELL} Объявление",
+            callback_data=f"broadcast_announce_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.GAME} Ссылка на матч",
+            callback_data=f"broadcast_match_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.CLOCK} Напоминание о check-in",
+            callback_data=f"broadcast_checkin_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=f"admin_t_manage_{tournament_id}"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    # ==================== БАНЫ ====================
+
+    @staticmethod
+    def ban_duration_menu(player_id: int) -> InlineKeyboardMarkup:
+        """Выбор длительности бана."""
+        builder = InlineKeyboardBuilder()
+        builder.button(text="1 день", callback_data=f"ban_duration_{player_id}_1")
+        builder.button(text="3 дня", callback_data=f"ban_duration_{player_id}_3")
+        builder.button(text="7 дней", callback_data=f"ban_duration_{player_id}_7")
+        builder.button(text="30 дней", callback_data=f"ban_duration_{player_id}_30")
+        builder.button(text=f"{Emoji.CROSS} Навсегда", callback_data=f"ban_duration_{player_id}_perm")
+        builder.button(text=f"{Emoji.BACK} Отмена", callback_data="admin_players")
+        builder.adjust(2, 2, 1, 1)
+        return builder.as_markup()
+
+    @staticmethod
+    def bans_list(bans: list[dict]) -> InlineKeyboardMarkup:
+        """Список банов."""
+        builder = InlineKeyboardBuilder()
+        for ban in bans[:10]:  # Лимит 10
+            builder.button(
+                text=f"{Emoji.CROSS} {ban['nickname']}",
+                callback_data=f"admin_ban_view_{ban['player_id']}"
+            )
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data="admin"
         )
         builder.adjust(1)
         return builder.as_markup()

@@ -350,6 +350,11 @@ async def callback_tournament_register(callback: CallbackQuery):
         await callback.answer("Вы не зарегистрированы!", show_alert=True)
         return
 
+    # Проверяем бан
+    if await db.is_player_banned(player["id"]):
+        await callback.answer("Вы заблокированы и не можете участвовать в турнирах!", show_alert=True)
+        return
+
     participant_count = await db.get_tournament_participant_count(tournament_id)
     is_full = participant_count >= tournament["max_participants"]
 
@@ -1308,24 +1313,157 @@ async def callback_template_builtin(callback: CallbackQuery, state: FSMContext):
 # ==================== РАССЫЛКА ====================
 
 @router.callback_query(F.data.regexp(r"^admin_t_broadcast_(\d+)$"))
-async def callback_admin_broadcast(callback: CallbackQuery, state: FSMContext):
-    """Рассылка участникам турнира."""
+async def callback_admin_broadcast(callback: CallbackQuery):
+    """Меню рассылки участникам турнира."""
     tournament_id = int(callback.data.split("_")[3])
 
     if not await db.is_admin(callback.from_user.id):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    await state.update_data(broadcast_tournament_id=tournament_id)
+    tournament = await db.get_tournament(tournament_id)
+    participant_count = await db.get_tournament_participant_count(tournament_id)
 
     await callback.message.edit_text(
         f"<b>{Emoji.SEND} Рассылка участникам</b>\n\n"
-        f"Введите текст сообщения:",
-        reply_markup=kb.back_button(f"admin_t_manage_{tournament_id}"),
+        f"<b>Турнир:</b> {tournament['name']}\n"
+        f"<b>Участников:</b> {participant_count}\n\n"
+        f"Выберите тип рассылки:",
+        reply_markup=kb.broadcast_menu(tournament_id),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^broadcast_announce_(\d+)$"))
+async def callback_broadcast_announce(callback: CallbackQuery, state: FSMContext):
+    """Объявление - ввод текста."""
+    tournament_id = int(callback.data.split("_")[2])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.update_data(broadcast_tournament_id=tournament_id, broadcast_type="announce")
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.BELL} Объявление</b>\n\n"
+        f"Введите текст объявления:",
+        reply_markup=kb.back_button(f"admin_t_broadcast_{tournament_id}"),
         parse_mode="HTML"
     )
     await state.set_state(BroadcastStates.waiting_message)
     await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^broadcast_match_(\d+)$"))
+async def callback_broadcast_match(callback: CallbackQuery):
+    """Отправить ссылки на матчи участникам."""
+    tournament_id = int(callback.data.split("_")[2])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    if tournament["status"] != "active":
+        await callback.answer("Турнир не активен!", show_alert=True)
+        return
+
+    # Получаем активные матчи
+    matches = await db.get_tournament_matches(tournament_id)
+    active_matches = [m for m in matches if m["status"] == "pending"]
+
+    if not active_matches:
+        await callback.answer("Нет активных матчей!", show_alert=True)
+        return
+
+    sent = 0
+    bot = callback.bot
+
+    for match in active_matches:
+        # Отправляем обоим участникам
+        participants = []
+        if tournament["format"] == "1v1":
+            if match.get("player1_id"):
+                p1 = await db.get_player_by_id(match["player1_id"])
+                if p1:
+                    participants.append(p1["telegram_id"])
+            if match.get("player2_id"):
+                p2 = await db.get_player_by_id(match["player2_id"])
+                if p2:
+                    participants.append(p2["telegram_id"])
+        else:
+            if match.get("team1_id"):
+                members1 = await db.get_team_members(match["team1_id"])
+                participants.extend([m["telegram_id"] for m in members1])
+            if match.get("team2_id"):
+                members2 = await db.get_team_members(match["team2_id"])
+                participants.extend([m["telegram_id"] for m in members2])
+
+        for tid in participants:
+            try:
+                await bot.send_message(
+                    tid,
+                    f"<b>{Emoji.GAME} Ваш матч готов!</b>\n\n"
+                    f"<b>Турнир:</b> {tournament['name']}\n"
+                    f"<b>Раунд:</b> {match['round']}\n\n"
+                    f"Свяжитесь с соперником и начните игру!",
+                    parse_mode="HTML"
+                )
+                sent += 1
+            except Exception:
+                pass
+
+    await callback.answer(f"Уведомления отправлены: {sent}", show_alert=True)
+    await _show_tournament_manage(callback, tournament_id)
+
+
+@router.callback_query(F.data.regexp(r"^broadcast_checkin_(\d+)$"))
+async def callback_broadcast_checkin(callback: CallbackQuery):
+    """Напоминание о check-in."""
+    tournament_id = int(callback.data.split("_")[2])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+
+    # Получаем участников без check-in
+    recipients = []
+    if tournament["format"] == "1v1":
+        players = await db.get_tournament_players(tournament_id)
+        recipients = [p["telegram_id"] for p in players if not p.get("checked_in")]
+    else:
+        teams = await db.get_tournament_teams(tournament_id)
+        for team in teams:
+            if not team.get("checked_in"):
+                members = await db.get_team_members(team["id"])
+                recipients.extend([m["telegram_id"] for m in members])
+
+    if not recipients:
+        await callback.answer("Все участники уже прошли check-in!", show_alert=True)
+        return
+
+    sent = 0
+    bot = callback.bot
+
+    for tid in recipients:
+        try:
+            await bot.send_message(
+                tid,
+                f"<b>{Emoji.CLOCK} Напоминание о Check-in!</b>\n\n"
+                f"<b>Турнир:</b> {tournament['name']}\n\n"
+                f"Пройдите check-in, чтобы подтвердить участие!",
+                parse_mode="HTML"
+            )
+            sent += 1
+        except Exception:
+            pass
+
+    await callback.answer(f"Напоминания отправлены: {sent}/{len(recipients)}", show_alert=True)
+    await _show_tournament_manage(callback, tournament_id)
 
 
 @router.message(BroadcastStates.waiting_message)
@@ -1349,7 +1487,6 @@ async def process_broadcast_message(message: Message, state: FSMContext):
             recipients.extend([m["telegram_id"] for m in members])
 
     sent = 0
-    from aiogram import Bot
     bot = message.bot
 
     for tid in recipients:
@@ -1834,22 +1971,36 @@ async def process_edit_name(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin_stats")
 async def callback_admin_stats(callback: CallbackQuery):
-    """Статистика в админке."""
+    """Расширенная статистика в админке."""
     if not await db.is_admin(callback.from_user.id):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    stats = await db.get_stats()
+    stats = await db.get_extended_stats()
 
     text = (
         f"<b>{Emoji.CHART} Статистика</b>\n\n"
-        f"{Emoji.PEOPLE} <b>Игроков:</b> {stats['total_players']}\n"
-        f"{Emoji.TROPHY} <b>Команд:</b> {stats['total_teams']}\n\n"
-        f"<b>Турниры:</b>\n"
+        f"<b>{Emoji.PEOPLE} Игроки:</b>\n"
+        f"• Всего: {stats['total_players']}\n"
+        f"• За сегодня: +{stats.get('players_today', 0)}\n"
+        f"• За неделю: +{stats.get('players_week', 0)}\n"
+        f"• За месяц: +{stats.get('players_month', 0)}\n\n"
+        f"<b>{Emoji.TROPHY} Команды:</b> {stats['total_teams']}\n\n"
+        f"<b>{Emoji.GAME} Турниры:</b>\n"
         f"• Всего: {stats['total_tournaments']}\n"
         f"• Активных: {stats['active_tournaments']}\n"
         f"• Завершённых: {stats['finished_tournaments']}\n"
+        f"• За неделю: {stats.get('tournaments_week', 0)}\n\n"
+        f"<b>{Emoji.CROSS} Баны:</b> {stats.get('active_bans', 0)} активных\n\n"
     )
+
+    # Топ игроков
+    top_players = stats.get("top_players", [])
+    if top_players:
+        text += f"<b>{Emoji.STAR} Топ-5 игроков:</b>\n"
+        for i, p in enumerate(top_players, 1):
+            winrate = (p['wins'] / (p['wins'] + p['losses']) * 100) if (p['wins'] + p['losses']) > 0 else 0
+            text += f"{i}. {escape_html(p['nickname'])} — {p['wins']}W ({winrate:.0f}%)\n"
 
     await callback.message.edit_text(
         text,
@@ -1874,3 +2025,83 @@ async def callback_admin_to_draft(callback: CallbackQuery):
     await callback.answer("Турнир помещён в черновик!", show_alert=True)
 
     await _show_tournament_manage(callback, tournament_id)
+
+
+# ==================== БАНЫ ====================
+
+@router.callback_query(F.data.regexp(r"^admin_player_ban_(\d+)$"))
+async def callback_admin_player_ban(callback: CallbackQuery):
+    """Начало бана игрока - выбор срока."""
+    player_telegram_id = int(callback.data.split("_")[3])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    player = await db.get_player(player_telegram_id)
+    if not player:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.LOCK} Бан игрока</b>\n\n"
+        f"<b>Игрок:</b> {escape_html(player['nickname'])}\n\n"
+        f"Выберите срок бана:",
+        reply_markup=kb.ban_duration_menu(player["id"]),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^ban_duration_(\d+)_(.+)$"))
+async def callback_ban_duration(callback: CallbackQuery):
+    """Применение бана с выбранным сроком."""
+    parts = callback.data.split("_")
+    player_id = int(parts[2])
+    duration = parts[3]
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    if duration == "perm":
+        await db.ban_player(player_id, callback.from_user.id, "Бан администратором", is_permanent=True)
+        msg = "Игрок забанен навсегда!"
+    else:
+        days = int(duration)
+        await db.ban_player(player_id, callback.from_user.id, "Бан администратором", days=days)
+        msg = f"Игрок забанен на {days} дней!"
+
+    await db.log_action(callback.from_user.id, "player_ban", f"Player ID: {player_id}, Duration: {duration}")
+
+    await callback.answer(msg, show_alert=True)
+    await callback.message.edit_text(
+        f"{Emoji.CHECK} {msg}",
+        reply_markup=kb.back_button("admin_players"),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.regexp(r"^admin_player_unban_(\d+)$"))
+async def callback_admin_player_unban(callback: CallbackQuery):
+    """Разбан игрока."""
+    player_telegram_id = int(callback.data.split("_")[3])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    player = await db.get_player(player_telegram_id)
+    if not player:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+
+    await db.unban_player(player["id"])
+    await db.log_action(callback.from_user.id, "player_unban", f"Player ID: {player['id']}")
+
+    await callback.answer("Игрок разбанен!", show_alert=True)
+    await callback.message.edit_text(
+        f"{Emoji.CHECK} Игрок {escape_html(player['nickname'])} разбанен!",
+        reply_markup=kb.back_button("admin_players"),
+        parse_mode="HTML"
+    )

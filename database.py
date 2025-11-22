@@ -216,6 +216,20 @@ class Database:
                 UNIQUE(tournament_id, team_id)
             );
 
+            -- Баны игроков
+            CREATE TABLE IF NOT EXISTS player_bans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_id INTEGER NOT NULL,
+                banned_by INTEGER NOT NULL,
+                reason TEXT,
+                banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                is_permanent BOOLEAN DEFAULT 0,
+                is_active BOOLEAN DEFAULT 1,
+                FOREIGN KEY (player_id) REFERENCES players(id),
+                FOREIGN KEY (banned_by) REFERENCES admins(telegram_id)
+            );
+
             -- Индексы
             CREATE INDEX IF NOT EXISTS idx_players_telegram ON players(telegram_id);
             CREATE INDEX IF NOT EXISTS idx_teams_captain ON teams(captain_id);
@@ -223,6 +237,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_tournaments_status ON tournaments(status);
             CREATE INDEX IF NOT EXISTS idx_matches_tournament ON matches(tournament_id);
             CREATE INDEX IF NOT EXISTS idx_tournament_posts ON tournament_posts(tournament_id);
+            CREATE INDEX IF NOT EXISTS idx_player_bans ON player_bans(player_id, is_active);
         """)
         await self.conn.commit()
 
@@ -1231,6 +1246,173 @@ class Database:
                 row = await cursor.fetchone()
                 return row["position"] if row else 0
         return 0
+
+    # ==================== БАНЫ ====================
+
+    async def ban_player(
+        self, player_id: int, banned_by: int, reason: str = None,
+        days: int = None, is_permanent: bool = False
+    ) -> bool:
+        """Забанить игрока."""
+        from datetime import datetime, timedelta
+        expires_at = None
+        if days and not is_permanent:
+            expires_at = datetime.now() + timedelta(days=days)
+
+        try:
+            await self.conn.execute(
+                """INSERT INTO player_bans (player_id, banned_by, reason, expires_at, is_permanent)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (player_id, banned_by, reason, expires_at, is_permanent)
+            )
+            await self.conn.commit()
+            return True
+        except Exception:
+            return False
+
+    async def unban_player(self, player_id: int) -> bool:
+        """Разбанить игрока."""
+        await self.conn.execute(
+            "UPDATE player_bans SET is_active = 0 WHERE player_id = ? AND is_active = 1",
+            (player_id,)
+        )
+        await self.conn.commit()
+        return True
+
+    async def is_player_banned(self, player_id: int) -> bool:
+        """Проверить, забанен ли игрок."""
+        from datetime import datetime
+        async with self.conn.execute(
+            """SELECT * FROM player_bans
+               WHERE player_id = ? AND is_active = 1
+               AND (is_permanent = 1 OR expires_at > ?)""",
+            (player_id, datetime.now())
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def get_player_ban(self, player_id: int) -> dict | None:
+        """Получить информацию о бане игрока."""
+        from datetime import datetime
+        async with self.conn.execute(
+            """SELECT * FROM player_bans
+               WHERE player_id = ? AND is_active = 1
+               AND (is_permanent = 1 OR expires_at > ?)
+               ORDER BY banned_at DESC LIMIT 1""",
+            (player_id, datetime.now())
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_all_bans(self, active_only: bool = True) -> list[dict]:
+        """Получить список всех банов."""
+        from datetime import datetime
+        if active_only:
+            async with self.conn.execute(
+                """SELECT b.*, p.nickname, p.telegram_id
+                   FROM player_bans b
+                   JOIN players p ON b.player_id = p.id
+                   WHERE b.is_active = 1
+                   AND (b.is_permanent = 1 OR b.expires_at > ?)
+                   ORDER BY b.banned_at DESC""",
+                (datetime.now(),)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+        else:
+            async with self.conn.execute(
+                """SELECT b.*, p.nickname, p.telegram_id
+                   FROM player_bans b
+                   JOIN players p ON b.player_id = p.id
+                   ORDER BY b.banned_at DESC"""
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    # ==================== УДАЛЕНИЕ ТУРНИРА ====================
+
+    async def delete_tournament(self, tournament_id: int) -> bool:
+        """Полностью удалить турнир."""
+        try:
+            await self.conn.execute(
+                "DELETE FROM tournaments WHERE id = ?", (tournament_id,)
+            )
+            await self.conn.commit()
+            return True
+        except Exception:
+            return False
+
+    # ==================== РАСШИРЕННАЯ СТАТИСТИКА ====================
+
+    async def get_extended_stats(self) -> dict:
+        """Получить расширенную статистику."""
+        from datetime import datetime, timedelta
+        stats = await self.get_stats()
+
+        now = datetime.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=7)
+        month_start = today_start - timedelta(days=30)
+
+        # Новые игроки за сегодня
+        async with self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM players WHERE created_at >= ?",
+            (today_start,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stats["players_today"] = row["cnt"] if row else 0
+
+        # Новые игроки за неделю
+        async with self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM players WHERE created_at >= ?",
+            (week_start,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stats["players_week"] = row["cnt"] if row else 0
+
+        # Новые игроки за месяц
+        async with self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM players WHERE created_at >= ?",
+            (month_start,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stats["players_month"] = row["cnt"] if row else 0
+
+        # Турниры за неделю
+        async with self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM tournaments WHERE created_at >= ?",
+            (week_start,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stats["tournaments_week"] = row["cnt"] if row else 0
+
+        # Матчи за неделю
+        async with self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM matches WHERE created_at >= ?",
+            (week_start,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stats["matches_week"] = row["cnt"] if row else 0
+
+        # Топ-5 игроков по победам
+        async with self.conn.execute(
+            """SELECT p.nickname, p.wins, p.losses
+               FROM players p
+               WHERE p.wins > 0
+               ORDER BY p.wins DESC LIMIT 5"""
+        ) as cursor:
+            rows = await cursor.fetchall()
+            stats["top_players"] = [dict(r) for r in rows]
+
+        # Активные баны
+        async with self.conn.execute(
+            """SELECT COUNT(*) as cnt FROM player_bans
+               WHERE is_active = 1 AND (is_permanent = 1 OR expires_at > ?)""",
+            (now,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stats["active_bans"] = row["cnt"] if row else 0
+
+        return stats
 
 
 # Глобальный экземпляр

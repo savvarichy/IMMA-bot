@@ -107,13 +107,16 @@ def format_tournament_info(tournament: dict, participant_count: int) -> str:
 
     progress = Emoji.progress_bar(participant_count, tournament["max_participants"])
 
+    # Для командных форматов показываем "Команды", для 1v1 - "Участники"
+    participant_label = "Команды" if tournament["format"] != "1v1" else "Участники"
+
     text = f"""
 <b>{Emoji.TROPHY} {tournament['name']}</b>
 
 {Emoji.INFO} <b>Статус:</b> {status_text}
 {Emoji.GAME} <b>Формат:</b> {format_text}
 {Emoji.MAP} <b>Карты:</b> {maps_text}
-{Emoji.PEOPLE} <b>Участники:</b> {participant_count}/{tournament['max_participants']}
+{Emoji.PEOPLE} <b>{participant_label}:</b> {participant_count}/{tournament['max_participants']}
 {progress}
 {Emoji.GIFT} <b>Призы:</b>
 {prize_text}
