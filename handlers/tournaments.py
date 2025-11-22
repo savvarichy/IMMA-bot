@@ -951,41 +951,17 @@ async def process_maps_done(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Выберите хотя бы одну карту!", show_alert=True)
         return
 
-    await callback.message.edit_text(
-        f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
-        f"<b>Шаг 4:</b> Выберите максимальное количество участников:",
-        reply_markup=kb.participants_select(),
-        parse_mode="HTML"
-    )
-    await state.set_state(CreateTournamentStates.waiting_participants)
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("t_participants_"), CreateTournamentStates.waiting_participants)
-async def process_participants(callback: CallbackQuery, state: FSMContext):
-    """Выбор количества участников."""
-    value = callback.data.replace("t_participants_", "")
-
-    if value == "custom":
-        await callback.message.edit_text(
-            f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
-            f"Введите количество участников (от 4 до 128):",
-            reply_markup=kb.back_button("admin_create_tournament"),
-            parse_mode="HTML"
-        )
-        await state.set_state(CreateTournamentStates.waiting_custom_participants)
-        await callback.answer()
-        return
-
-    await state.update_data(max_participants=int(value))
+    data = await state.get_data()
+    tournament_format = data.get("format", "1v1")
+    participant_label = "команд" if tournament_format != "1v1" else "участников"
 
     await callback.message.edit_text(
         f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
-        f"<b>Шаг 5:</b> Выберите тип приза:",
-        reply_markup=kb.prize_type_select(),
+        f"<b>Шаг 4:</b> Введите количество {participant_label} (от 2 до 128):",
+        reply_markup=kb.back_button("admin_create_tournament"),
         parse_mode="HTML"
     )
-    await state.set_state(CreateTournamentStates.waiting_prize_type)
+    await state.set_state(CreateTournamentStates.waiting_custom_participants)
     await callback.answer()
 
 
@@ -994,11 +970,11 @@ async def process_custom_participants(message: Message, state: FSMContext):
     """Ввод своего количества участников."""
     try:
         num = int(message.text.strip())
-        if num < 4 or num > 128:
+        if num < 2 or num > 128:
             raise ValueError()
     except ValueError:
         await message.answer(
-            f"{Emoji.CROSS} Введите число от 4 до 128.",
+            f"{Emoji.CROSS} Введите число от 2 до 128.",
             reply_markup=kb.back_button("admin_create_tournament"),
             parse_mode="HTML"
         )
@@ -1318,7 +1294,7 @@ async def process_tournament_confirm(callback: CallbackQuery, state: FSMContext)
 
 # ==================== ШАБЛОНЫ ====================
 
-@router.callback_query(F.data == "admin_from_template")
+@router.callback_query(F.data.in_({"admin_from_template", "templates_list"}))
 async def callback_admin_from_template(callback: CallbackQuery):
     """Создание из шаблона."""
     if not await db.is_admin(callback.from_user.id):
@@ -2164,3 +2140,344 @@ async def callback_admin_player_unban(callback: CallbackQuery):
         reply_markup=kb.back_button("admin_players"),
         parse_mode="HTML"
     )
+
+
+# ==================== РЕДАКТИРОВАНИЕ ТУРНИРА ====================
+
+@router.callback_query(F.data.regexp(r"^admin_t_edit_date_(\d+)$"))
+async def callback_admin_edit_date(callback: CallbackQuery, state: FSMContext):
+    """Редактирование даты турнира."""
+    tournament_id = int(callback.data.split("_")[4])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.update_data(edit_tournament_id=tournament_id)
+    await state.set_state(EditTournamentStates.waiting_date)
+
+    await callback.message.edit_text(
+        f"{Emoji.CALENDAR} <b>Выберите новую дату:</b>",
+        reply_markup=kb.calendar_keyboard(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("calendar_day_"), EditTournamentStates.waiting_date)
+async def callback_edit_calendar_day(callback: CallbackQuery, state: FSMContext):
+    """Выбор дня для редактирования."""
+    date_str = callback.data.replace("calendar_day_", "")
+    selected_date = datetime.strptime(date_str, "%Y-%m-%d")
+
+    await state.update_data(edit_date=selected_date)
+    await state.set_state(EditTournamentStates.waiting_time)
+
+    await callback.message.edit_text(
+        f"{Emoji.CLOCK} <b>Выберите время:</b>",
+        reply_markup=kb.time_select(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("t_time_"), EditTournamentStates.waiting_time)
+async def callback_edit_time(callback: CallbackQuery, state: FSMContext):
+    """Выбор времени для редактирования."""
+    time_str = callback.data.replace("t_time_", "")
+    hour, minute = map(int, time_str.split("_"))
+
+    data = await state.get_data()
+    selected_date = data["edit_date"]
+    tournament_id = data["edit_tournament_id"]
+
+    new_start_time = datetime(
+        selected_date.year, selected_date.month, selected_date.day,
+        hour, minute
+    )
+
+    await db.update_tournament(tournament_id, start_time=new_start_time)
+    await db.log_action(callback.from_user.id, "tournament_edit", f"Changed date to {new_start_time}")
+
+    await state.clear()
+    await callback.answer("Дата обновлена!", show_alert=True)
+    await _show_tournament_manage(callback, tournament_id)
+
+
+@router.callback_query(F.data.regexp(r"^admin_t_edit_maps_(\d+)$"))
+async def callback_admin_edit_maps(callback: CallbackQuery, state: FSMContext):
+    """Редактирование карт турнира."""
+    tournament_id = int(callback.data.split("_")[4])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    await state.update_data(
+        edit_tournament_id=tournament_id,
+        selected_maps=tournament.get("maps", [])
+    )
+
+    await callback.message.edit_text(
+        f"{Emoji.MAP} <b>Выберите карты:</b>\n\nТекущие: {', '.join(tournament.get('maps', []))}",
+        reply_markup=kb.map_select(tournament.get("maps", [])),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("t_map_"), F.data.regexp(r"^t_map_"))
+async def callback_edit_map_toggle(callback: CallbackQuery, state: FSMContext):
+    """Переключение карты при редактировании."""
+    data = await state.get_data()
+    if "edit_tournament_id" not in data:
+        return
+
+    map_name = callback.data.replace("t_map_", "")
+    selected = data.get("selected_maps", [])
+
+    if map_name in selected:
+        selected.remove(map_name)
+    else:
+        selected.append(map_name)
+
+    await state.update_data(selected_maps=selected)
+
+    tournament = await db.get_tournament(data["edit_tournament_id"])
+    await callback.message.edit_text(
+        f"{Emoji.MAP} <b>Выберите карты:</b>\n\nВыбрано: {', '.join(selected) if selected else 'нет'}",
+        reply_markup=kb.map_select(selected),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "t_maps_done")
+async def callback_edit_maps_done(callback: CallbackQuery, state: FSMContext):
+    """Завершение редактирования карт."""
+    data = await state.get_data()
+    if "edit_tournament_id" not in data:
+        return
+
+    tournament_id = data["edit_tournament_id"]
+    selected_maps = data.get("selected_maps", [])
+
+    if not selected_maps:
+        await callback.answer("Выберите хотя бы одну карту!", show_alert=True)
+        return
+
+    await db.update_tournament(tournament_id, maps=selected_maps)
+    await db.log_action(callback.from_user.id, "tournament_edit", f"Changed maps to {selected_maps}")
+
+    await state.clear()
+    await callback.answer("Карты обновлены!", show_alert=True)
+    await _show_tournament_manage(callback, tournament_id)
+
+
+@router.callback_query(F.data.regexp(r"^admin_t_edit_participants_(\d+)$"))
+async def callback_admin_edit_participants(callback: CallbackQuery, state: FSMContext):
+    """Редактирование количества участников."""
+    tournament_id = int(callback.data.split("_")[4])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    await state.update_data(edit_tournament_id=tournament_id)
+    await state.set_state(EditTournamentStates.waiting_participants)
+
+    participant_label = "команд" if tournament["format"] != "1v1" else "участников"
+
+    await callback.message.edit_text(
+        f"{Emoji.PEOPLE} <b>Введите новое количество {participant_label}:</b>\n\n"
+        f"Текущее: {tournament['max_participants']}\n"
+        f"(от 2 до 128)",
+        reply_markup=kb.back_button(f"admin_t_edit_{tournament_id}"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.message(EditTournamentStates.waiting_participants)
+async def process_edit_participants(message: Message, state: FSMContext):
+    """Обработка нового количества участников."""
+    try:
+        count = int(message.text.strip())
+        if count < 2 or count > 128:
+            await message.answer("Введите число от 2 до 128!")
+            return
+    except ValueError:
+        await message.answer("Введите корректное число!")
+        return
+
+    data = await state.get_data()
+    tournament_id = data["edit_tournament_id"]
+
+    await db.update_tournament(tournament_id, max_participants=count)
+    await db.log_action(message.from_user.id, "tournament_edit", f"Changed max_participants to {count}")
+
+    await state.clear()
+
+    tournament = await db.get_tournament(tournament_id)
+    participant_count = await db.get_tournament_participant_count(tournament_id)
+    text = format_tournament_info(tournament, participant_count)
+
+    await message.answer(
+        f"{Emoji.CHECK} Количество участников обновлено!\n\n{text}",
+        reply_markup=kb.admin_tournament_manage(tournament),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.regexp(r"^admin_t_edit_prizes_(\d+)$"))
+async def callback_admin_edit_prizes(callback: CallbackQuery, state: FSMContext):
+    """Редактирование призов турнира."""
+    tournament_id = int(callback.data.split("_")[4])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.update_data(edit_tournament_id=tournament_id, edit_prizes={})
+    await state.set_state(EditTournamentStates.waiting_prize_1)
+
+    await callback.message.edit_text(
+        f"{Emoji.GIFT} <b>Введите приз за 1 место:</b>\n\n"
+        f"Например: 5000₽, скины, 100 Stars",
+        reply_markup=kb.back_button(f"admin_t_edit_{tournament_id}"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.message(EditTournamentStates.waiting_prize_1)
+async def process_edit_prize_1(message: Message, state: FSMContext):
+    """Приз за 1 место."""
+    data = await state.get_data()
+    prizes = data.get("edit_prizes", {})
+    prizes["1"] = message.text.strip()
+    await state.update_data(edit_prizes=prizes)
+    await state.set_state(EditTournamentStates.waiting_prize_2)
+
+    await message.answer(
+        f"{Emoji.GIFT} <b>Введите приз за 2 место</b> (или отправьте '-' чтобы пропустить):",
+        parse_mode="HTML"
+    )
+
+
+@router.message(EditTournamentStates.waiting_prize_2)
+async def process_edit_prize_2(message: Message, state: FSMContext):
+    """Приз за 2 место."""
+    data = await state.get_data()
+    prizes = data.get("edit_prizes", {})
+
+    if message.text.strip() != "-":
+        prizes["2"] = message.text.strip()
+        await state.update_data(edit_prizes=prizes)
+
+    await state.set_state(EditTournamentStates.waiting_prize_3)
+    await message.answer(
+        f"{Emoji.GIFT} <b>Введите приз за 3 место</b> (или отправьте '-' чтобы пропустить):",
+        parse_mode="HTML"
+    )
+
+
+@router.message(EditTournamentStates.waiting_prize_3)
+async def process_edit_prize_3(message: Message, state: FSMContext):
+    """Приз за 3 место и сохранение."""
+    data = await state.get_data()
+    prizes = data.get("edit_prizes", {})
+    tournament_id = data["edit_tournament_id"]
+
+    if message.text.strip() != "-":
+        prizes["3"] = message.text.strip()
+
+    await db.update_tournament(tournament_id, prizes=prizes, prize_type="custom")
+    await db.log_action(message.from_user.id, "tournament_edit", f"Changed prizes")
+
+    await state.clear()
+
+    tournament = await db.get_tournament(tournament_id)
+    participant_count = await db.get_tournament_participant_count(tournament_id)
+    text = format_tournament_info(tournament, participant_count)
+
+    await message.answer(
+        f"{Emoji.CHECK} Призы обновлены!\n\n{text}",
+        reply_markup=kb.admin_tournament_manage(tournament),
+        parse_mode="HTML"
+    )
+
+
+# ==================== ШАБЛОНЫ ====================
+
+@router.callback_query(F.data.regexp(r"^admin_t_save_template_(\d+)$"))
+async def callback_admin_save_template(callback: CallbackQuery):
+    """Сохранить турнир как шаблон."""
+    tournament_id = int(callback.data.split("_")[4])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
+    # Создаём шаблон на основе турнира
+    template_id = await db.create_template(
+        name=f"Шаблон: {tournament['name']}",
+        format=tournament["format"],
+        maps=tournament["maps"],
+        max_participants=tournament["max_participants"],
+        prize_type=tournament.get("prize_type", "none"),
+        prize_amount=tournament.get("prize_amount", 0),
+        checkin_hours=tournament.get("checkin_hours", 0),
+        created_by=callback.from_user.id
+    )
+
+    await db.log_action(callback.from_user.id, "template_create", f"From tournament {tournament_id}")
+
+    await callback.answer("Шаблон создан!", show_alert=True)
+    await _show_tournament_manage(callback, tournament_id)
+
+
+@router.callback_query(F.data.regexp(r"^template_custom_(\d+)$"))
+async def callback_template_custom(callback: CallbackQuery, state: FSMContext):
+    """Использовать пользовательский шаблон."""
+    template_id = int(callback.data.split("_")[2])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    template = await db.get_template(template_id)
+    if not template:
+        await callback.answer("Шаблон не найден!", show_alert=True)
+        return
+
+    # Загружаем данные шаблона в состояние создания турнира
+    await state.update_data(
+        format=template["format"],
+        maps=template["maps"],
+        max_participants=template["max_participants"],
+        prize_type=template.get("prize_type", "none"),
+        prize_amount=template.get("prize_amount", 0),
+        checkin_hours=template.get("checkin_hours", 0)
+    )
+    await state.set_state(CreateTournamentStates.waiting_name)
+
+    format_name = config.TOURNAMENT_FORMATS.get(template["format"], {}).get("name", template["format"])
+
+    await callback.message.edit_text(
+        f"{Emoji.TROPHY} <b>Создание турнира из шаблона</b>\n\n"
+        f"Формат: {format_name}\n"
+        f"Карты: {', '.join(template['maps'])}\n"
+        f"Участников: {template['max_participants']}\n\n"
+        f"{Emoji.EDIT} <b>Введите название турнира:</b>",
+        reply_markup=kb.back_button("admin"),
+        parse_mode="HTML"
+    )
+    await callback.answer()

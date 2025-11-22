@@ -257,6 +257,48 @@ class Database:
         """)
         await self.conn.commit()
 
+        # Миграции для старых баз данных
+        await self._run_migrations()
+
+    async def _run_migrations(self) -> None:
+        """Выполнить миграции для старых баз."""
+        # Проверяем и добавляем недостающие колонки в matches
+        try:
+            await self.conn.execute("SELECT created_at FROM matches LIMIT 1")
+        except Exception:
+            await self.conn.execute("ALTER TABLE matches ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            await self.conn.commit()
+
+        try:
+            await self.conn.execute("SELECT started_at FROM matches LIMIT 1")
+        except Exception:
+            await self.conn.execute("ALTER TABLE matches ADD COLUMN started_at TIMESTAMP")
+            await self.conn.commit()
+
+        try:
+            await self.conn.execute("SELECT completed_at FROM matches LIMIT 1")
+        except Exception:
+            await self.conn.execute("ALTER TABLE matches ADD COLUMN completed_at TIMESTAMP")
+            await self.conn.commit()
+
+        try:
+            await self.conn.execute("SELECT queue_position FROM matches LIMIT 1")
+        except Exception:
+            await self.conn.execute("ALTER TABLE matches ADD COLUMN queue_position INTEGER DEFAULT 0")
+            await self.conn.commit()
+
+        try:
+            await self.conn.execute("SELECT server_link FROM matches LIMIT 1")
+        except Exception:
+            await self.conn.execute("ALTER TABLE matches ADD COLUMN server_link TEXT")
+            await self.conn.commit()
+
+        try:
+            await self.conn.execute("SELECT scheduled_time FROM matches LIMIT 1")
+        except Exception:
+            await self.conn.execute("ALTER TABLE matches ADD COLUMN scheduled_time TIMESTAMP")
+            await self.conn.commit()
+
     # ==================== ИГРОКИ ====================
 
     async def get_player(self, telegram_id: int) -> Optional[dict]:

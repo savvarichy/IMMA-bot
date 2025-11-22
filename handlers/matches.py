@@ -190,6 +190,7 @@ async def callback_match_result(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(
         match_id=match_id,
+        tournament_id=match["tournament_id"],
         p1_name=p1_name,
         p2_name=p2_name,
         winner_position=1  # По умолчанию победитель - первый
@@ -205,7 +206,7 @@ async def callback_match_result(callback: CallbackQuery, state: FSMContext):
 
     await callback.message.edit_text(
         text,
-        reply_markup=kb.match_score_select(match_id),
+        reply_markup=kb.match_score_select(match_id, match["tournament_id"]),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -223,6 +224,7 @@ async def callback_match_swap_winner(callback: CallbackQuery, state: FSMContext)
     await state.update_data(winner_position=new_pos)
 
     winner_name = data["p1_name"] if new_pos == 1 else data["p2_name"]
+    tournament_id = data.get("tournament_id", 0)
 
     text = (
         f"<b>{Emoji.SWORD} Матч</b>\n\n"
@@ -234,7 +236,7 @@ async def callback_match_swap_winner(callback: CallbackQuery, state: FSMContext)
 
     await callback.message.edit_text(
         text,
-        reply_markup=kb.match_score_select(match_id),
+        reply_markup=kb.match_score_select(match_id, tournament_id),
         parse_mode="HTML"
     )
     await callback.answer(f"Победитель: {winner_name}")

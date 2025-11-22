@@ -944,7 +944,7 @@ class Keyboards:
 
         builder.button(
             text=f"{Emoji.BACK} Назад",
-            callback_data="admin"
+            callback_data="admin_other"
         )
         builder.adjust(1)
         return builder.as_markup()
@@ -1030,7 +1030,7 @@ class Keyboards:
         return builder.as_markup()
 
     @staticmethod
-    def match_score_select(match_id: int) -> InlineKeyboardMarkup:
+    def match_score_select(match_id: int, tournament_id: int) -> InlineKeyboardMarkup:
         """Выбор счёта матча."""
         builder = InlineKeyboardBuilder()
 
@@ -1060,7 +1060,7 @@ class Keyboards:
         )
         builder.button(
             text=f"{Emoji.BACK} Назад",
-            callback_data=f"admin_t_result_{match_id}"
+            callback_data=f"admin_t_manage_{tournament_id}"
         )
         builder.adjust(4, 4, 4, 1, 2)
         return builder.as_markup()
