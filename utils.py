@@ -178,9 +178,34 @@ def format_prizes(tournament: dict) -> str:
     lines = []
     for place, prize in sorted(prizes.items(), key=lambda x: int(x[0])):
         emoji = config.PRIZE_PLACES.get(int(place), f"{place}.")
-        lines.append(f"{emoji} {prize}")
+        formatted_prize = format_prize_value(prize, prize_type)
+        lines.append(f"{emoji} {formatted_prize}")
 
     return "\n".join(lines) if lines else "Без приза"
+
+
+def format_prize_value(prize: str, prize_type: str) -> str:
+    """Форматирование значения приза с символом валюты."""
+    if not prize:
+        return ""
+
+    # Пробуем распарсить как число для добавления символа валюты
+    try:
+        amount = int(prize.replace(" ", "").replace(",", ""))
+        if prize_type == "rub":
+            return f"{amount:,}₽".replace(",", " ")
+        elif prize_type == "stars":
+            return f"{amount} ⭐"
+        elif prize_type == "skins":
+            return f"🔫 {prize}"
+    except ValueError:
+        pass
+
+    # Для custom или если не число - возвращаем как есть
+    if prize_type == "skins":
+        return f"🔫 {prize}"
+
+    return prize
 
 
 def format_prize_old(prize_type: str, amount: int) -> str:

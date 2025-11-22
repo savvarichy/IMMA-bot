@@ -6,7 +6,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from database import db
 from keyboards import Emoji
-from utils import format_datetime, format_prizes, get_time_until
+from utils import format_datetime, format_prizes, get_time_until, format_prize_value
 from config import config
 
 
@@ -247,51 +247,57 @@ class ChannelService:
             tournament["format"], {}
         ).get("name", tournament["format"])
 
-        prize_text = format_prizes(tournament)
-
         # Получаем призы для отображения
-        prizes = tournament.get("prizes", []) or []
+        prizes = tournament.get("prizes", {}) or {}
+        prize_type = tournament.get("prize_type", "none")
         if isinstance(prizes, str):
             import json
             try:
                 prizes = json.loads(prizes)
             except Exception:
-                prizes = []
+                prizes = {}
+
+        # Преобразуем в список с форматированием валюты
         if isinstance(prizes, dict):
-            prizes = [prizes.get(str(i + 1), "") for i in range(len(prizes))]
+            prizes_list = [
+                format_prize_value(prizes.get(str(i + 1), ""), prize_type)
+                for i in range(3)
+            ]
+        else:
+            prizes_list = [
+                format_prize_value(p, prize_type) for p in (list(prizes)[:3] if prizes else [])
+            ]
 
         text = f"""🏆 <b>ТУРНИР ЗАВЕРШЁН!</b>
 
 📛 <b>{tournament['name']}</b>
 🎮 Формат: {format_name}
 
-📊 <b>РЕЗУЛЬТАТЫ:</b>
+🏅 <b>ПРИЗЁРЫ:</b>
 
 """
-        # Медали для мест
+        # Медали для мест - только ТОП-3
         place_medals = ["🥇", "🥈", "🥉"]
 
-        for i, s in enumerate(standings):
+        for i, s in enumerate(standings[:3]):  # Только первые 3 места
             pid = s["participant_id"]
             name = participants_names.get(pid, f"ID:{pid}")
             wins = s.get("wins", 0)
             losses = s.get("losses", 0)
 
-            if i < 3:
-                place_icon = place_medals[i]
-            else:
-                place_icon = f"{i + 1}."
+            place_icon = place_medals[i]
 
             prize_info = ""
-            if i < len(prizes) and prizes[i]:
-                prize_info = f" — <b>{prizes[i]}</b>"
+            if i < len(prizes_list) and prizes_list[i]:
+                prize_info = f" — <b>{prizes_list[i]}</b>"
 
             text += f"{place_icon} {name} ({wins}W/{losses}L){prize_info}\n"
 
-        # История матчей
+        # История матчей в сворачиваемом блоке
         completed_matches = [m for m in matches if m["status"] == "completed"]
         if completed_matches:
-            text += f"\n⚔️ <b>ИСТОРИЯ МАТЧЕЙ ({len(completed_matches)}):</b>\n\n"
+            text += f"\n⚔️ <b>ИСТОРИЯ МАТЧЕЙ ({len(completed_matches)}):</b>\n"
+            text += "<blockquote expandable>"
 
             for match in completed_matches:
                 p1_name = participants_names.get(match["participant1_id"], "?")
@@ -305,6 +311,8 @@ class ChannelService:
                     result_text = f"{p1_name} {match['score1']}:{match['score2']} <b>{p2_name}</b>"
 
                 text += f"• {result_text}\n"
+
+            text += "</blockquote>"
 
         text += f"\n🏁 <b>IMMA Championship</b>"
 
