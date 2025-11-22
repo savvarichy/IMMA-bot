@@ -697,7 +697,7 @@ async def callback_admin_start_checkin(callback: CallbackQuery):
 
 @router.callback_query(F.data.regexp(r"^admin_t_start_(\d+)$"))
 async def callback_admin_start_tournament(callback: CallbackQuery):
-    """Начать турнир."""
+    """Начать турнир (ручная система матчей)."""
     tournament_id = int(callback.data.split("_")[3])
 
     if not await db.is_admin(callback.from_user.id):
@@ -706,35 +706,29 @@ async def callback_admin_start_tournament(callback: CallbackQuery):
 
     tournament = await db.get_tournament(tournament_id)
 
-    # Импортируем генератор сетки
-    from services.bracket import BracketGenerator
-
     # Получаем участников
     if tournament["format"] == "1v1":
         if tournament["checkin_hours"] > 0:
             participants = await db.get_checked_in_players(tournament_id)
         else:
             participants = await db.get_tournament_players(tournament_id)
-        participant_type = "player"
     else:
         if tournament["checkin_hours"] > 0:
             participants = await db.get_checked_in_teams(tournament_id)
         else:
             participants = await db.get_tournament_teams(tournament_id)
-        participant_type = "team"
 
     if len(participants) < 2:
         await callback.answer("Недостаточно участников!", show_alert=True)
         return
 
-    # Генерируем сетку
-    bracket = BracketGenerator(tournament_id, participants, participant_type)
-    await bracket.generate()
+    # Инициализируем статусы участников для ручной системы матчей
+    await db.init_participant_statuses(tournament_id)
 
     await db.update_tournament_status(tournament_id, "active")
     await db.log_action(callback.from_user.id, "tournament_start", f"ID: {tournament_id}")
 
-    await callback.answer("Турнир начался!", show_alert=True)
+    await callback.answer("Турнир начался! Используйте 'Управление матчами' для создания матчей.", show_alert=True)
 
     await _show_tournament_manage(callback, tournament_id)
 
@@ -782,6 +776,84 @@ async def callback_admin_docancel_tournament(callback: CallbackQuery):
         reply_markup=kb.back_button("admin_tournaments"),
         parse_mode="HTML"
     )
+
+
+@router.callback_query(F.data.regexp(r"^admin_t_finish_(\d+)$"))
+async def callback_admin_finish_tournament(callback: CallbackQuery):
+    """Завершить турнир вручную."""
+    tournament_id = int(callback.data.split("_")[3])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
+    if tournament["status"] != "active":
+        await callback.answer("Турнир не активен!", show_alert=True)
+        return
+
+    # Проверяем, есть ли активные матчи
+    active_matches = await db.get_active_matches_count(tournament_id)
+    if active_matches > 0:
+        await callback.answer(f"Нельзя завершить: {active_matches} матч(ей) ещё идёт!", show_alert=True)
+        return
+
+    # Получаем финальную статистику участников
+    standings = await db.get_tournament_standings(tournament_id)
+    remaining = [s for s in standings if s["status"] != "eliminated"]
+
+    # Если остался один участник - он победитель
+    winner_name = None
+    if len(remaining) == 1:
+        winner = remaining[0]
+        participant_type = winner["participant_type"]
+
+        if participant_type == "player":
+            player = await db.get_player_by_id(winner["participant_id"])
+            if player:
+                winner_name = player["nickname"]
+                await db.increment_player_stats(player["telegram_id"], won=True)
+        else:
+            team = await db.get_team(winner["participant_id"])
+            if team:
+                winner_name = team["name"]
+                await db.update_team(team["id"], tournaments_won=team.get("tournaments_won", 0) + 1)
+
+    # Обновляем статус турнира
+    await db.update_tournament_status(tournament_id, "finished")
+    await db.log_action(callback.from_user.id, "tournament_finish", f"ID: {tournament_id}")
+
+    # Формируем текст результатов
+    text = f"<b>{Emoji.TROPHY} Турнир завершён!</b>\n\n"
+    text += f"<b>{tournament['name']}</b>\n\n"
+
+    if winner_name:
+        text += f"🥇 <b>Победитель:</b> {escape_html(winner_name)}\n\n"
+
+    # Показываем топ участников по победам
+    text += "<b>Результаты:</b>\n"
+    sorted_standings = sorted(standings, key=lambda x: x["wins"], reverse=True)
+    for i, s in enumerate(sorted_standings[:10], 1):
+        if s["participant_type"] == "player":
+            p = await db.get_player_by_id(s["participant_id"])
+            name = p["nickname"] if p else f"ID:{s['participant_id']}"
+        else:
+            t = await db.get_team(s["participant_id"])
+            name = t["name"] if t else f"ID:{s['participant_id']}"
+
+        status_icon = "❌" if s["status"] == "eliminated" else "🟢"
+        text += f"{i}. {status_icon} {escape_html(name)} - {s['wins']}W\n"
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.back_button("admin_tournaments"),
+        parse_mode="HTML"
+    )
+    await callback.answer("Турнир завершён!")
 
 
 @router.callback_query(F.data.regexp(r"^admin_t_participants_(\d+)$"))
@@ -1333,9 +1405,13 @@ async def callback_admin_from_template(callback: CallbackQuery):
 
     templates = await db.get_all_templates()
 
+    text = f"<b>{Emoji.STAR} Шаблоны турниров</b>\n\n"
+    if templates:
+        text += f"Пользовательских шаблонов: {len(templates)}\n"
+    text += "Выберите шаблон для создания турнира:"
+
     await callback.message.edit_text(
-        f"<b>{Emoji.STAR} Шаблоны турниров</b>\n\n"
-        "Выберите шаблон:",
+        text,
         reply_markup=kb.templates_list(templates),
         parse_mode="HTML"
     )
@@ -2189,7 +2265,7 @@ async def callback_admin_edit_date(callback: CallbackQuery, state: FSMContext):
     now = datetime.now()
     await callback.message.edit_text(
         f"{Emoji.CALENDAR} <b>Выберите новую дату:</b>",
-        reply_markup=kb.calendar(now.year, now.month),
+        reply_markup=kb.calendar(now.year, now.month, back_callback=f"admin_t_edit_{tournament_id}"),
         parse_mode="HTML"
     )
     await callback.answer()

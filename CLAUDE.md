@@ -62,6 +62,7 @@ Single `Database` class with async SQLite connection. All database operations ar
 - `tournaments` - Tournament configuration (format, maps, prizes, dates, status)
 - `tournament_players` / `tournament_teams` - Registration records
 - `matches` - Match data (participants, scores, winner, status)
+- `tournament_participant_status` - Participant status tracking for manual match system (ready/in_match/eliminated, wins counter)
 - `lobby` - Player ready status during active tournaments
 - `player_bans` - Ban records with expiration
 - `admins` - Additional admin users (beyond config ADMIN_IDS)
@@ -98,7 +99,8 @@ Organized by domain. Each module creates a `Router` and registers handlers.
 - `CreateTeamStates` - team creation
 - `JoinTeamStates` - joining via invite code
 - `MatchResultStates` - entering match scores
-- `MatchLinkStates` - entering server links
+- `MatchLinkStates` - entering server links (queue-based system)
+- `ManualMatchLinkStates` - entering server links (manual match system)
 
 ### Services (`services/`)
 
@@ -175,8 +177,49 @@ All configuration in `Config` class, loaded from environment variables:
 4. **Active** - Bracket generated, matches in progress
 5. **Finished** - Winner determined
 
-### Match Queue System
+### Manual Match System (Primary)
 
+The bot uses a **manual match system** where admin has full control over match pairings:
+
+1. **Tournament starts** → All participants get status `ready` in `tournament_participant_status` table
+2. **Admin creates match** → Selects 2 ready participants → Both become `in_match`
+3. **Match completes** → Winner returns to `ready`, loser becomes `eliminated`
+4. **Admin repeats** until 1 participant remains
+5. **Finish tournament** → Shows final standings sorted by wins
+
+**Participant statuses:**
+- `ready` - Available for matches
+- `in_match` - Currently playing
+- `eliminated` - Lost and out of tournament
+
+**Key callback patterns:**
+- `mm_control_{tournament_id}` - Main management screen
+- `mm_create_{tournament_id}` - Start creating match
+- `mm_p1_{tournament_id}_{participant_id}` - Select first participant
+- `mm_p2_{tournament_id}_{participant_id}` - Select second participant
+- `mm_go_{tournament_id}_{p1_id}_{p2_id}` - Create match without link
+- `mm_link_{tournament_id}_{p1_id}_{p2_id}` - Create match with server link
+- `mm_active_{tournament_id}` - View active matches
+- `mm_restore_{tournament_id}` - Restore eliminated participant
+
+**Manual match workflow example:**
+```python
+# Create manual match (sets both participants to in_match)
+match_id = await db.create_manual_match(tournament_id, p1_id, p2_id, "player", server_link)
+
+# Complete match (winner → ready, loser → eliminated)
+await db.complete_manual_match(match_id, winner_id, score1, score2)
+
+# Cancel match (both return to ready)
+await db.cancel_match(match_id)
+
+# Restore eliminated participant
+await db.restore_participant(tournament_id, participant_id, "player")
+```
+
+### Match Queue System (Legacy)
+
+Alternative queue-based system (not currently used):
 - Matches start with status `pending` (queued)
 - Admin starts match -> status becomes `active`
 - Admin enters result -> status becomes `completed`
@@ -218,6 +261,7 @@ except Exception:
 - Simple actions: `action_name` (e.g., `main_menu`, `register`)
 - With ID: `action_id` (e.g., `tournament_123`, `team_45`)
 - Admin actions: `admin_action_id` (e.g., `admin_t_open_123`)
+- Manual matches: `mm_action_id` or `mm_action_id1_id2` (e.g., `mm_control_1`, `mm_go_1_2_3`)
 - Complex: `action_subaction_id1_id2` (e.g., `match_set_1_16_14_1`)
 
 ### Text Formatting

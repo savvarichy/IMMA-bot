@@ -142,19 +142,20 @@ async def callback_admin_enter_result(callback: CallbackQuery):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    matches = await db.get_pending_matches(tournament_id)
+    # Ищем АКТИВНЫЕ матчи (уже запущенные), а не pending
+    matches = await db.get_active_matches(tournament_id)
 
     # Фильтруем только матчи с обоими участниками
     ready_matches = [m for m in matches if m["participant1_id"] and m["participant2_id"]]
 
     if not ready_matches:
-        await callback.answer("Нет матчей, готовых к игре!", show_alert=True)
+        await callback.answer("Нет активных матчей для ввода результата!", show_alert=True)
         return
 
     await callback.message.edit_text(
         f"<b>{Emoji.PENCIL} Ввод результата</b>\n\n"
-        "Выберите матч:",
-        reply_markup=kb.matches_list(ready_matches, tournament_id),
+        "Выберите активный матч:",
+        reply_markup=kb.active_matches_list(ready_matches, tournament_id),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -753,6 +754,25 @@ async def callback_lobby_ready(callback: CallbackQuery):
         await callback.answer("Вы не зарегистрированы!", show_alert=True)
         return
 
+    # Проверяем, что игрок является участником турнира
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
+    is_participant = False
+    if tournament["format"] == "1v1":
+        is_participant = await db.is_player_registered(tournament_id, player["id"])
+    else:
+        # Для командных турниров проверяем команду игрока
+        team = await db.get_player_team_by_format(player["id"], tournament["format"])
+        if team:
+            is_participant = await db.is_team_registered(tournament_id, team["id"])
+
+    if not is_participant:
+        await callback.answer("Вы не являетесь участником этого турнира!", show_alert=True)
+        return
+
     await db.set_player_lobby_status(tournament_id, player["id"], "ready")
     await callback.answer("Вы отмечены как готовый!", show_alert=True)
 
@@ -815,3 +835,484 @@ async def callback_player_lobby(callback: CallbackQuery):
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+# ==================== РУЧНАЯ СИСТЕМА МАТЧЕЙ ====================
+
+async def _get_participants_with_names(tournament_id: int) -> list[dict]:
+    """Получить участников с именами для отображения."""
+    tournament = await db.get_tournament(tournament_id)
+    standings = await db.get_tournament_standings(tournament_id)
+
+    result = []
+    if tournament["format"] == "1v1":
+        players = await db.get_tournament_players(tournament_id)
+        players_dict = {p["id"]: p["nickname"] for p in players}
+        for s in standings:
+            s["name"] = players_dict.get(s["participant_id"], f"ID:{s['participant_id']}")
+            result.append(s)
+    else:
+        teams = await db.get_tournament_teams(tournament_id)
+        teams_dict = {t["id"]: t["name"] for t in teams}
+        for s in standings:
+            s["name"] = teams_dict.get(s["participant_id"], f"ID:{s['participant_id']}")
+            result.append(s)
+
+    return result
+
+
+@router.callback_query(F.data.regexp(r"^mm_control_(\d+)$"))
+async def callback_mm_control(callback: CallbackQuery):
+    """Главный экран управления ручными матчами."""
+    tournament_id = int(callback.data.split("_")[2])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    standings = await db.get_tournament_standings(tournament_id)
+
+    # Подсчёт по статусам
+    ready_count = sum(1 for s in standings if s["status"] == "ready")
+    in_match_count = sum(1 for s in standings if s["status"] == "in_match")
+    eliminated_count = sum(1 for s in standings if s["status"] == "eliminated")
+    active_matches = await db.get_active_matches_count(tournament_id)
+
+    text = (
+        f"<b>🎮 Управление матчами</b>\n\n"
+        f"<b>Турнир:</b> {tournament['name']}\n\n"
+        f"🟢 Готовы: {ready_count}\n"
+        f"🔴 В матче: {in_match_count}\n"
+        f"❌ Выбыли: {eliminated_count}\n\n"
+        f"Активных матчей: {active_matches}"
+    )
+
+    # Проверка на завершение турнира
+    remaining = await db.count_remaining_participants(tournament_id)
+    if remaining == 1 and active_matches == 0:
+        text += f"\n\n{Emoji.TROPHY} <b>Остался 1 участник - можно завершить турнир!</b>"
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.manual_match_control(
+            tournament_id, ready_count, in_match_count, eliminated_count, active_matches
+        ),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^mm_create_(\d+)$"))
+async def callback_mm_create(callback: CallbackQuery, state: FSMContext):
+    """Выбор первого участника для матча."""
+    tournament_id = int(callback.data.split("_")[2])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    participants = await _get_participants_with_names(tournament_id)
+    ready = [p for p in participants if p["status"] == "ready"]
+
+    if len(ready) < 2:
+        await callback.answer("Недостаточно готовых участников для матча!", show_alert=True)
+        return
+
+    await state.update_data(mm_tournament_id=tournament_id)
+
+    await callback.message.edit_text(
+        f"<b>➕ Создание матча</b>\n\n"
+        f"Выберите <b>первого</b> участника:",
+        reply_markup=kb.participant_select(ready, tournament_id, "p1"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^mm_p1_(\d+)_(\d+)$"))
+async def callback_mm_select_p1(callback: CallbackQuery, state: FSMContext):
+    """Первый участник выбран, выбираем второго."""
+    parts = callback.data.split("_")
+    tournament_id = int(parts[2])
+    p1_id = int(parts[3])
+
+    await state.update_data(mm_p1_id=p1_id)
+
+    participants = await _get_participants_with_names(tournament_id)
+    ready = [p for p in participants if p["status"] == "ready" and p["participant_id"] != p1_id]
+
+    p1_name = next((p["name"] for p in participants if p["participant_id"] == p1_id), "?")
+
+    await callback.message.edit_text(
+        f"<b>➕ Создание матча</b>\n\n"
+        f"Первый: <b>{p1_name}</b>\n\n"
+        f"Выберите <b>соперника</b>:",
+        reply_markup=kb.participant_select(ready, tournament_id, "p2", exclude_id=p1_id),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^mm_p2_(\d+)_(\d+)$"))
+async def callback_mm_select_p2(callback: CallbackQuery, state: FSMContext):
+    """Второй участник выбран, показываем подтверждение."""
+    parts = callback.data.split("_")
+    tournament_id = int(parts[2])
+    p2_id = int(parts[3])
+
+    data = await state.get_data()
+    p1_id = data.get("mm_p1_id")
+
+    participants = await _get_participants_with_names(tournament_id)
+    p1_name = next((p["name"] for p in participants if p["participant_id"] == p1_id), "?")
+    p2_name = next((p["name"] for p in participants if p["participant_id"] == p2_id), "?")
+
+    await state.update_data(mm_p2_id=p2_id)
+
+    await callback.message.edit_text(
+        f"<b>⚔️ Новый матч</b>\n\n"
+        f"<b>{p1_name}</b>\n   vs\n<b>{p2_name}</b>\n\n"
+        f"Введите ссылку на сервер или запустите без ссылки:",
+        reply_markup=kb.match_confirm(tournament_id, p1_id, p2_id, p1_name, p2_name),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^mm_go_(\d+)_(\d+)_(\d+)$"))
+async def callback_mm_go(callback: CallbackQuery, state: FSMContext):
+    """Создать матч без ссылки."""
+    parts = callback.data.split("_")
+    tournament_id = int(parts[2])
+    p1_id = int(parts[3])
+    p2_id = int(parts[4])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    participant_type = "player" if tournament["format"] == "1v1" else "team"
+
+    # Создаём матч
+    match_id = await db.create_manual_match(
+        tournament_id, p1_id, p2_id, participant_type
+    )
+
+    await state.clear()
+
+    # Получаем имена для уведомлений
+    participants = await _get_participants_with_names(tournament_id)
+    p1_name = next((p["name"] for p in participants if p["participant_id"] == p1_id), "?")
+    p2_name = next((p["name"] for p in participants if p["participant_id"] == p2_id), "?")
+
+    # Отправляем уведомления участникам
+    bot = callback.bot
+    notification_text = (
+        f"<b>⚔️ Ваш матч начался!</b>\n\n"
+        f"<b>{p1_name}</b> vs <b>{p2_name}</b>\n\n"
+        f"Турнир: {tournament['name']}"
+    )
+
+    if tournament["format"] == "1v1":
+        # Уведомляем игроков
+        for pid in [p1_id, p2_id]:
+            player = await db.get_player_by_id(pid)
+            if player:
+                try:
+                    await bot.send_message(player["telegram_id"], notification_text, parse_mode="HTML")
+                except Exception:
+                    pass
+    else:
+        # Уведомляем команды
+        for tid in [p1_id, p2_id]:
+            members = await db.get_team_members(tid)
+            for member in members:
+                try:
+                    await bot.send_message(member["telegram_id"], notification_text, parse_mode="HTML")
+                except Exception:
+                    pass
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.CHECK} Матч создан!</b>\n\n"
+        f"<b>{p1_name}</b> vs <b>{p2_name}</b>\n\n"
+        f"Уведомления отправлены участникам.",
+        reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+        parse_mode="HTML"
+    )
+    await callback.answer("Матч создан!")
+
+
+@router.callback_query(F.data.regexp(r"^mm_active_(\d+)$"))
+async def callback_mm_active(callback: CallbackQuery):
+    """Список активных матчей."""
+    tournament_id = int(callback.data.split("_")[2])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    matches = await db.get_active_matches(tournament_id)
+    tournament = await db.get_tournament(tournament_id)
+
+    if not matches:
+        await callback.answer("Нет активных матчей!", show_alert=True)
+        return
+
+    # Получаем имена участников
+    participants_names = {}
+    if tournament["format"] == "1v1":
+        players = await db.get_tournament_players(tournament_id)
+        participants_names = {p["id"]: p["nickname"] for p in players}
+    else:
+        teams = await db.get_tournament_teams(tournament_id)
+        participants_names = {t["id"]: t["name"] for t in teams}
+
+    await callback.message.edit_text(
+        f"<b>🔴 Активные матчи</b>\n\n"
+        f"Выберите матч для управления:",
+        reply_markup=kb.active_matches_control(matches, tournament_id, participants_names),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^mm_cancel_(\d+)$"))
+async def callback_mm_cancel(callback: CallbackQuery):
+    """Отменить матч."""
+    match_id = int(callback.data.split("_")[2])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    match = await db.get_match(match_id)
+    if not match:
+        await callback.answer("Матч не найден!", show_alert=True)
+        return
+
+    success = await db.cancel_match(match_id)
+    if success:
+        await callback.answer("Матч отменён!", show_alert=True)
+        # Возвращаемся к управлению
+        callback.data = f"mm_control_{match['tournament_id']}"
+        await callback_mm_control(callback)
+    else:
+        await callback.answer("Не удалось отменить матч!", show_alert=True)
+
+
+@router.callback_query(F.data.regexp(r"^mm_restore_(\d+)$"))
+async def callback_mm_restore(callback: CallbackQuery):
+    """Выбор выбывшего участника для возврата."""
+    tournament_id = int(callback.data.split("_")[2])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    participants = await _get_participants_with_names(tournament_id)
+    eliminated = [p for p in participants if p["status"] == "eliminated"]
+
+    if not eliminated:
+        await callback.answer("Нет выбывших участников!", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"<b>🔄 Возврат участника</b>\n\n"
+        f"Выберите участника для возврата в турнир:",
+        reply_markup=kb.restore_participant_select(eliminated, tournament_id),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^mm_do_restore_(\d+)_(\d+)$"))
+async def callback_mm_do_restore(callback: CallbackQuery):
+    """Выполнить возврат участника."""
+    parts = callback.data.split("_")
+    tournament_id = int(parts[3])
+    participant_id = int(parts[4])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    participant_type = "player" if tournament["format"] == "1v1" else "team"
+
+    await db.restore_participant(tournament_id, participant_id, participant_type)
+
+    await callback.answer("Участник возвращён в турнир!", show_alert=True)
+    # Возвращаемся к управлению
+    callback.data = f"mm_control_{tournament_id}"
+    await callback_mm_control(callback)
+
+
+@router.callback_query(F.data.regexp(r"^mm_participants_(\d+)$"))
+async def callback_mm_participants(callback: CallbackQuery):
+    """Показать всех участников со статусами."""
+    tournament_id = int(callback.data.split("_")[2])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    participants = await _get_participants_with_names(tournament_id)
+
+    status_icons = {"ready": "🟢", "in_match": "🔴", "eliminated": "❌"}
+
+    text = f"<b>👥 Участники турнира</b>\n\n"
+    for p in participants:
+        icon = status_icons.get(p["status"], "")
+        text += f"{icon} {p['name']} - {p['wins']}W\n"
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^mm_match_(\d+)$"))
+async def callback_mm_match_view(callback: CallbackQuery):
+    """Просмотр и управление активным матчем."""
+    match_id = int(callback.data.split("_")[2])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    match = await db.get_match(match_id)
+    if not match:
+        await callback.answer("Матч не найден!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(match["tournament_id"])
+
+    # Получаем имена участников
+    if tournament["format"] == "1v1":
+        p1 = await db.get_player_by_id(match["participant1_id"])
+        p2 = await db.get_player_by_id(match["participant2_id"])
+        p1_name = p1["nickname"] if p1 else "?"
+        p2_name = p2["nickname"] if p2 else "?"
+    else:
+        t1 = await db.get_team(match["participant1_id"])
+        t2 = await db.get_team(match["participant2_id"])
+        p1_name = t1["name"] if t1 else "?"
+        p2_name = t2["name"] if t2 else "?"
+
+    text = (
+        f"<b>🔴 Активный матч #{match['match_number']}</b>\n\n"
+        f"<b>{p1_name}</b>\n   vs\n<b>{p2_name}</b>\n\n"
+    )
+    if match.get("server_link"):
+        text += f"<b>Сервер:</b> {match['server_link']}\n"
+    if match.get("started_at"):
+        text += f"<b>Начат:</b> {match['started_at']}\n"
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.match_actions(match_id, match["tournament_id"]),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+class ManualMatchLinkStates(StatesGroup):
+    """Состояния ввода ссылки для ручного матча."""
+    waiting_link = State()
+
+
+@router.callback_query(F.data.regexp(r"^mm_link_(\d+)_(\d+)_(\d+)$"))
+async def callback_mm_link_start(callback: CallbackQuery, state: FSMContext):
+    """Начать ввод ссылки на сервер для ручного матча."""
+    parts = callback.data.split("_")
+    tournament_id = int(parts[2])
+    p1_id = int(parts[3])
+    p2_id = int(parts[4])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.update_data(
+        mm_tournament_id=tournament_id,
+        mm_p1_id=p1_id,
+        mm_p2_id=p2_id
+    )
+
+    participants = await _get_participants_with_names(tournament_id)
+    p1_name = next((p["name"] for p in participants if p["participant_id"] == p1_id), "?")
+    p2_name = next((p["name"] for p in participants if p["participant_id"] == p2_id), "?")
+
+    await callback.message.edit_text(
+        f"<b>🔗 Ссылка на сервер</b>\n\n"
+        f"<b>{p1_name}</b> vs <b>{p2_name}</b>\n\n"
+        f"Введите ссылку на сервер (например, connect ip:port):",
+        reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+        parse_mode="HTML"
+    )
+    await state.set_state(ManualMatchLinkStates.waiting_link)
+    await callback.answer()
+
+
+@router.message(ManualMatchLinkStates.waiting_link)
+async def process_mm_link(message: Message, state: FSMContext):
+    """Обработка ссылки и создание матча."""
+    data = await state.get_data()
+    tournament_id = data.get("mm_tournament_id")
+    p1_id = data.get("mm_p1_id")
+    p2_id = data.get("mm_p2_id")
+    server_link = message.text.strip()
+
+    await state.clear()
+
+    tournament = await db.get_tournament(tournament_id)
+    participant_type = "player" if tournament["format"] == "1v1" else "team"
+
+    # Создаём матч с ссылкой
+    match_id = await db.create_manual_match(
+        tournament_id, p1_id, p2_id, participant_type, server_link
+    )
+
+    # Получаем имена для уведомлений
+    participants = await _get_participants_with_names(tournament_id)
+    p1_name = next((p["name"] for p in participants if p["participant_id"] == p1_id), "?")
+    p2_name = next((p["name"] for p in participants if p["participant_id"] == p2_id), "?")
+
+    # Отправляем уведомления участникам
+    bot = message.bot
+    notification_text = (
+        f"<b>⚔️ Ваш матч начался!</b>\n\n"
+        f"<b>{p1_name}</b> vs <b>{p2_name}</b>\n\n"
+        f"<b>Турнир:</b> {tournament['name']}\n"
+        f"<b>Сервер:</b> {server_link}"
+    )
+
+    if tournament["format"] == "1v1":
+        for pid in [p1_id, p2_id]:
+            player = await db.get_player_by_id(pid)
+            if player:
+                try:
+                    await bot.send_message(player["telegram_id"], notification_text, parse_mode="HTML")
+                except Exception:
+                    pass
+    else:
+        for tid in [p1_id, p2_id]:
+            members = await db.get_team_members(tid)
+            for member in members:
+                try:
+                    await bot.send_message(member["telegram_id"], notification_text, parse_mode="HTML")
+                except Exception:
+                    pass
+
+    await message.answer(
+        f"<b>{Emoji.CHECK} Матч создан!</b>\n\n"
+        f"<b>{p1_name}</b> vs <b>{p2_name}</b>\n\n"
+        f"Ссылка: {server_link}\n"
+        f"Уведомления отправлены участникам.",
+        reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+        parse_mode="HTML"
+    )

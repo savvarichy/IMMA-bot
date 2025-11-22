@@ -607,8 +607,8 @@ class Keyboards:
 
         elif status == "active":
             builder.button(
-                text=f"{Emoji.PLAY} Очередь матчей",
-                callback_data=f"admin_t_queue_{tournament['id']}"
+                text=f"🎮 Управление матчами",
+                callback_data=f"mm_control_{tournament['id']}"
             )
             builder.button(
                 text=f"{Emoji.PEOPLE} Лобби",
@@ -619,8 +619,8 @@ class Keyboards:
                 callback_data=f"admin_t_matches_{tournament['id']}"
             )
             builder.button(
-                text=f"{Emoji.PENCIL} Ввести результат",
-                callback_data=f"admin_t_result_{tournament['id']}"
+                text=f"{Emoji.TROPHY} Завершить турнир",
+                callback_data=f"admin_t_finish_{tournament['id']}"
             )
 
         # Кнопка публикации в канал
@@ -804,7 +804,8 @@ class Keyboards:
     def calendar(
         year: int,
         month: int,
-        selected_date: Optional[datetime] = None
+        selected_date: Optional[datetime] = None,
+        back_callback: str = "admin_create_tournament"
     ) -> InlineKeyboardMarkup:
         """Календарь для выбора даты."""
         builder = InlineKeyboardBuilder()
@@ -865,7 +866,7 @@ class Keyboards:
 
         builder.button(
             text=f"{Emoji.BACK} Назад",
-            callback_data="admin_create_tournament"
+            callback_data=back_callback
         )
 
         builder.adjust(1, 7, 7, 7, 7, 7, 7, 2, 1)
@@ -1076,6 +1077,28 @@ class Keyboards:
             if match["status"] == "pending" and match["participant1_id"] and match["participant2_id"]:
                 builder.button(
                     text=f"R{match['round']} M{match['match_number']}",
+                    callback_data=f"match_result_{match['id']}"
+                )
+
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=f"admin_t_manage_{tournament_id}"
+        )
+        builder.adjust(4)
+        return builder.as_markup()
+
+    @staticmethod
+    def active_matches_list(
+        matches: list[dict],
+        tournament_id: int
+    ) -> InlineKeyboardMarkup:
+        """Список активных матчей для ввода результата."""
+        builder = InlineKeyboardBuilder()
+
+        for match in matches:
+            if match["participant1_id"] and match["participant2_id"]:
+                builder.button(
+                    text=f"🔴 R{match['round']} M{match['match_number']}",
                     callback_data=f"match_result_{match['id']}"
                 )
 
@@ -1320,6 +1343,175 @@ class Keyboards:
         builder.button(
             text=f"{Emoji.BACK} К турниру",
             callback_data=f"tournament_{tournament_id}"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    # ==================== РУЧНАЯ СИСТЕМА МАТЧЕЙ ====================
+
+    @staticmethod
+    def manual_match_control(
+        tournament_id: int,
+        ready_count: int,
+        in_match_count: int,
+        eliminated_count: int,
+        active_matches: int
+    ) -> InlineKeyboardMarkup:
+        """Главный экран управления ручными матчами."""
+        builder = InlineKeyboardBuilder()
+
+        builder.button(
+            text=f"➕ Создать матч",
+            callback_data=f"mm_create_{tournament_id}"
+        )
+        builder.button(
+            text=f"🔴 Активные матчи ({active_matches})",
+            callback_data=f"mm_active_{tournament_id}"
+        )
+        builder.button(
+            text=f"📝 Ввести результат",
+            callback_data=f"admin_t_result_{tournament_id}"
+        )
+        builder.button(
+            text=f"👥 Участники ({ready_count}🟢 {in_match_count}🔴 {eliminated_count}❌)",
+            callback_data=f"mm_participants_{tournament_id}"
+        )
+        builder.button(
+            text=f"🔄 Вернуть игрока",
+            callback_data=f"mm_restore_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=f"admin_t_manage_{tournament_id}"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def participant_select(
+        participants: list[dict],
+        tournament_id: int,
+        action: str,
+        exclude_id: int = None
+    ) -> InlineKeyboardMarkup:
+        """Выбор участника для матча."""
+        builder = InlineKeyboardBuilder()
+
+        status_icons = {
+            "ready": "🟢",
+            "in_match": "🔴",
+            "eliminated": "❌"
+        }
+
+        for p in participants:
+            if exclude_id and p["participant_id"] == exclude_id:
+                continue
+
+            icon = status_icons.get(p.get("status", "ready"), "")
+            wins = p.get("wins", 0)
+            name = p.get("name", f"ID:{p['participant_id']}")
+
+            builder.button(
+                text=f"{icon} {name} ({wins}W)",
+                callback_data=f"mm_{action}_{tournament_id}_{p['participant_id']}"
+            )
+
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=f"mm_control_{tournament_id}"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def match_confirm(
+        tournament_id: int,
+        p1_id: int,
+        p2_id: int,
+        p1_name: str,
+        p2_name: str
+    ) -> InlineKeyboardMarkup:
+        """Подтверждение создания матча."""
+        builder = InlineKeyboardBuilder()
+
+        builder.button(
+            text=f"🚀 Создать без ссылки",
+            callback_data=f"mm_go_{tournament_id}_{p1_id}_{p2_id}"
+        )
+        builder.button(
+            text=f"🔗 Ввести ссылку на сервер",
+            callback_data=f"mm_link_{tournament_id}_{p1_id}_{p2_id}"
+        )
+        builder.button(
+            text=f"{Emoji.BACK} Отмена",
+            callback_data=f"mm_control_{tournament_id}"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def active_matches_control(
+        matches: list[dict],
+        tournament_id: int,
+        participants: dict
+    ) -> InlineKeyboardMarkup:
+        """Список активных матчей с управлением."""
+        builder = InlineKeyboardBuilder()
+
+        for match in matches:
+            p1 = participants.get(match["participant1_id"], "?")
+            p2 = participants.get(match["participant2_id"], "?")
+            builder.button(
+                text=f"🔴 {p1} vs {p2}",
+                callback_data=f"mm_match_{match['id']}"
+            )
+
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=f"mm_control_{tournament_id}"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def match_actions(match_id: int, tournament_id: int) -> InlineKeyboardMarkup:
+        """Действия с активным матчем."""
+        builder = InlineKeyboardBuilder()
+
+        builder.button(
+            text=f"📝 Ввести результат",
+            callback_data=f"match_result_{match_id}"
+        )
+        builder.button(
+            text=f"❌ Отменить матч",
+            callback_data=f"mm_cancel_{match_id}"
+        )
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=f"mm_active_{tournament_id}"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def restore_participant_select(
+        participants: list[dict],
+        tournament_id: int
+    ) -> InlineKeyboardMarkup:
+        """Выбор выбывшего участника для возврата."""
+        builder = InlineKeyboardBuilder()
+
+        for p in participants:
+            name = p.get("name", f"ID:{p['participant_id']}")
+            wins = p.get("wins", 0)
+            builder.button(
+                text=f"❌ {name} ({wins}W)",
+                callback_data=f"mm_do_restore_{tournament_id}_{p['participant_id']}"
+            )
+
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=f"mm_control_{tournament_id}"
         )
         builder.adjust(1)
         return builder.as_markup()

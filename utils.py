@@ -2,11 +2,15 @@
 import re
 import random
 import string
+import asyncio
+import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Callable, Any
 
 from keyboards import Emoji
 from config import config
+
+logger = logging.getLogger(__name__)
 
 
 def generate_invite_code() -> str:
@@ -387,3 +391,104 @@ def escape_html(text: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+
+
+async def retry_on_network_error(
+    func: Callable,
+    *args,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    **kwargs
+) -> Any:
+    """
+    Выполнить функцию с повторными попытками при сетевых ошибках.
+
+    Args:
+        func: Асинхронная функция для выполнения
+        *args: Позиционные аргументы для функции
+        max_retries: Максимальное количество попыток
+        base_delay: Базовая задержка между попытками (умножается на номер попытки)
+        **kwargs: Именованные аргументы для функции
+
+    Returns:
+        Результат выполнения функции
+    """
+    from aiogram.exceptions import TelegramNetworkError
+
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return await func(*args, **kwargs)
+        except TelegramNetworkError as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                delay = base_delay * (attempt + 1)
+                logger.warning(
+                    f"Сетевая ошибка (попытка {attempt + 1}/{max_retries}): {e}. "
+                    f"Повтор через {delay} сек."
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(f"Сетевая ошибка после {max_retries} попыток: {e}")
+
+    raise last_error
+
+
+async def safe_send_message(bot, chat_id: int, text: str, **kwargs) -> bool:
+    """
+    Безопасная отправка сообщения с обработкой ошибок.
+
+    Returns:
+        True если успешно, False если ошибка
+    """
+    from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
+
+    try:
+        await retry_on_network_error(
+            bot.send_message,
+            chat_id,
+            text,
+            **kwargs
+        )
+        return True
+    except TelegramForbiddenError:
+        logger.warning(f"Пользователь {chat_id} заблокировал бота")
+        return False
+    except TelegramBadRequest as e:
+        logger.warning(f"Ошибка отправки сообщения пользователю {chat_id}: {e}")
+        return False
+    except TelegramNetworkError as e:
+        logger.error(f"Сетевая ошибка при отправке сообщения: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Неизвестная ошибка при отправке сообщения: {e}")
+        return False
+
+
+async def safe_edit_message(message, text: str, **kwargs) -> bool:
+    """
+    Безопасное редактирование сообщения с обработкой ошибок.
+
+    Returns:
+        True если успешно, False если ошибка
+    """
+    from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+
+    try:
+        await retry_on_network_error(
+            message.edit_text,
+            text,
+            **kwargs
+        )
+        return True
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e).lower():
+            return True  # Сообщение не изменилось - это не ошибка
+        logger.warning(f"Ошибка редактирования сообщения: {e}")
+        return False
+    except TelegramNetworkError as e:
+        logger.error(f"Сетевая ошибка при редактировании: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Неизвестная ошибка при редактировании: {e}")
+        return False

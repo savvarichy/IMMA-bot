@@ -246,6 +246,21 @@ class Database:
                 FOREIGN KEY (banned_by) REFERENCES admins(telegram_id)
             );
 
+            -- Статусы участников турнира (для ручной системы матчей)
+            CREATE TABLE IF NOT EXISTS tournament_participant_status (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tournament_id INTEGER NOT NULL,
+                participant_id INTEGER NOT NULL,
+                participant_type TEXT NOT NULL,
+                status TEXT DEFAULT 'ready',
+                wins INTEGER DEFAULT 0,
+                current_match_id INTEGER,
+                eliminated_at TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+                UNIQUE(tournament_id, participant_id, participant_type)
+            );
+
             -- Индексы
             CREATE INDEX IF NOT EXISTS idx_players_telegram ON players(telegram_id);
             CREATE INDEX IF NOT EXISTS idx_teams_captain ON teams(captain_id);
@@ -1613,6 +1628,241 @@ class Database:
             (tournament_id,)
         )
         await self.conn.commit()
+
+    # ==================== СТАТУСЫ УЧАСТНИКОВ (РУЧНАЯ СИСТЕМА) ====================
+
+    async def init_participant_statuses(self, tournament_id: int) -> None:
+        """Инициализировать статусы всех участников турнира."""
+        tournament = await self.get_tournament(tournament_id)
+        if not tournament:
+            return
+
+        if tournament["format"] == "1v1":
+            players = await self.get_tournament_players(tournament_id)
+            for player in players:
+                await self.set_participant_status(
+                    tournament_id, player["id"], "player", "ready"
+                )
+        else:
+            teams = await self.get_tournament_teams(tournament_id)
+            for team in teams:
+                await self.set_participant_status(
+                    tournament_id, team["id"], "team", "ready"
+                )
+
+    async def set_participant_status(
+        self,
+        tournament_id: int,
+        participant_id: int,
+        participant_type: str,
+        status: str,
+        current_match_id: int = None
+    ) -> None:
+        """Установить статус участника турнира."""
+        from datetime import datetime
+        eliminated_at = datetime.now() if status == "eliminated" else None
+
+        await self.conn.execute(
+            """INSERT INTO tournament_participant_status
+               (tournament_id, participant_id, participant_type, status, current_match_id, eliminated_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(tournament_id, participant_id, participant_type)
+               DO UPDATE SET status = ?, current_match_id = ?, eliminated_at = COALESCE(eliminated_at, ?), updated_at = ?""",
+            (tournament_id, participant_id, participant_type, status, current_match_id, eliminated_at, datetime.now(),
+             status, current_match_id, eliminated_at, datetime.now())
+        )
+        await self.conn.commit()
+
+    async def get_participant_status(
+        self,
+        tournament_id: int,
+        participant_id: int,
+        participant_type: str
+    ) -> Optional[dict]:
+        """Получить статус участника."""
+        async with self.conn.execute(
+            """SELECT * FROM tournament_participant_status
+               WHERE tournament_id = ? AND participant_id = ? AND participant_type = ?""",
+            (tournament_id, participant_id, participant_type)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_participants_by_status(
+        self,
+        tournament_id: int,
+        status: str
+    ) -> list[dict]:
+        """Получить участников по статусу."""
+        async with self.conn.execute(
+            """SELECT * FROM tournament_participant_status
+               WHERE tournament_id = ? AND status = ?
+               ORDER BY wins DESC, updated_at""",
+            (tournament_id, status)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_available_participants(self, tournament_id: int) -> list[dict]:
+        """Получить доступных участников (ready)."""
+        return await self.get_participants_by_status(tournament_id, "ready")
+
+    async def get_eliminated_participants(self, tournament_id: int) -> list[dict]:
+        """Получить выбывших участников."""
+        return await self.get_participants_by_status(tournament_id, "eliminated")
+
+    async def increment_participant_wins(
+        self,
+        tournament_id: int,
+        participant_id: int,
+        participant_type: str
+    ) -> None:
+        """Увеличить счётчик побед участника."""
+        await self.conn.execute(
+            """UPDATE tournament_participant_status SET wins = wins + 1, updated_at = ?
+               WHERE tournament_id = ? AND participant_id = ? AND participant_type = ?""",
+            (datetime.now(), tournament_id, participant_id, participant_type)
+        )
+        await self.conn.commit()
+
+    async def restore_participant(
+        self,
+        tournament_id: int,
+        participant_id: int,
+        participant_type: str
+    ) -> None:
+        """Вернуть выбывшего участника в турнир."""
+        await self.conn.execute(
+            """UPDATE tournament_participant_status
+               SET status = 'ready', eliminated_at = NULL, updated_at = ?
+               WHERE tournament_id = ? AND participant_id = ? AND participant_type = ?""",
+            (datetime.now(), tournament_id, participant_id, participant_type)
+        )
+        await self.conn.commit()
+
+    async def get_tournament_standings(self, tournament_id: int) -> list[dict]:
+        """Получить таблицу результатов турнира."""
+        async with self.conn.execute(
+            """SELECT * FROM tournament_participant_status
+               WHERE tournament_id = ?
+               ORDER BY
+                   CASE status WHEN 'eliminated' THEN 1 ELSE 0 END,
+                   wins DESC,
+                   updated_at""",
+            (tournament_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def count_remaining_participants(self, tournament_id: int) -> int:
+        """Подсчитать оставшихся участников (не eliminated)."""
+        async with self.conn.execute(
+            """SELECT COUNT(*) as cnt FROM tournament_participant_status
+               WHERE tournament_id = ? AND status != 'eliminated'""",
+            (tournament_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["cnt"] if row else 0
+
+    # ==================== РУЧНОЕ СОЗДАНИЕ МАТЧЕЙ ====================
+
+    async def create_manual_match(
+        self,
+        tournament_id: int,
+        participant1_id: int,
+        participant2_id: int,
+        participant_type: str,
+        server_link: str = None
+    ) -> int:
+        """Создать матч вручную и сразу активировать."""
+        from datetime import datetime
+
+        # Получаем номер следующего матча
+        async with self.conn.execute(
+            "SELECT COALESCE(MAX(match_number), 0) + 1 as next_num FROM matches WHERE tournament_id = ?",
+            (tournament_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            match_number = row["next_num"] if row else 1
+
+        # Создаём матч со статусом active
+        async with self.conn.execute(
+            """INSERT INTO matches
+               (tournament_id, round, match_number, participant1_id, participant2_id,
+                participant1_type, status, server_link, started_at)
+               VALUES (?, 1, ?, ?, ?, ?, 'active', ?, ?)""",
+            (tournament_id, match_number, participant1_id, participant2_id,
+             participant_type, server_link, datetime.now())
+        ) as cursor:
+            match_id = cursor.lastrowid
+            await self.conn.commit()
+
+        # Обновляем статусы участников
+        await self.set_participant_status(
+            tournament_id, participant1_id, participant_type, "in_match", match_id
+        )
+        await self.set_participant_status(
+            tournament_id, participant2_id, participant_type, "in_match", match_id
+        )
+
+        return match_id
+
+    async def complete_manual_match(
+        self,
+        match_id: int,
+        winner_id: int,
+        score1: int,
+        score2: int
+    ) -> bool:
+        """Завершить матч и обновить статусы участников."""
+        from datetime import datetime
+
+        match = await self.get_match(match_id)
+        if not match or match["status"] != "active":
+            return False
+
+        # Определяем проигравшего
+        loser_id = match["participant2_id"] if winner_id == match["participant1_id"] else match["participant1_id"]
+
+        # Обновляем матч
+        await self.set_match_result(match_id, score1, score2, winner_id)
+
+        # Обновляем статусы: победитель → ready, проигравший → eliminated
+        await self.set_participant_status(
+            match["tournament_id"], winner_id, match["participant1_type"], "ready"
+        )
+        await self.set_participant_status(
+            match["tournament_id"], loser_id, match["participant1_type"], "eliminated"
+        )
+
+        # Увеличиваем счётчик побед
+        await self.increment_participant_wins(
+            match["tournament_id"], winner_id, match["participant1_type"]
+        )
+
+        return True
+
+    async def cancel_match(self, match_id: int) -> bool:
+        """Отменить матч и вернуть участников в ready."""
+        match = await self.get_match(match_id)
+        if not match or match["status"] != "active":
+            return False
+
+        # Удаляем матч
+        await self.conn.execute("DELETE FROM matches WHERE id = ?", (match_id,))
+        await self.conn.commit()
+
+        # Возвращаем участников в ready
+        await self.set_participant_status(
+            match["tournament_id"], match["participant1_id"],
+            match["participant1_type"], "ready"
+        )
+        await self.set_participant_status(
+            match["tournament_id"], match["participant2_id"],
+            match["participant1_type"], "ready"
+        )
+
+        return True
 
 
 # Глобальный экземпляр
