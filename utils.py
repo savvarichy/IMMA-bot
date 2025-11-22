@@ -143,6 +143,10 @@ def format_tournament_info(tournament: dict, participant_count: int) -> str:
         else:
             remaining_text = f"\n<i>Осталось {remaining} мест</i>"
 
+    # Взнос за участие
+    entry_fee = tournament.get("entry_fee", 0)
+    fee_text = "Бесплатно" if entry_fee == 0 else f"{entry_fee} ⭐"
+
     text = f"""
 <b>{Emoji.TROPHY} {tournament['name']}</b>
 
@@ -153,6 +157,7 @@ def format_tournament_info(tournament: dict, participant_count: int) -> str:
 {progress}
 {Emoji.GIFT} <b>Призы:</b>
 {prize_text}
+{Emoji.STAR} <b>Взнос:</b> {fee_text}
 {Emoji.CALENDAR} <b>Старт:</b> {format_datetime(tournament['start_time'])}
 """
 

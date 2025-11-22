@@ -69,6 +69,10 @@ class ChannelService:
         # Для командных форматов показываем "Команды"
         participant_label = "Команды" if tournament["format"] != "1v1" else "Участники"
 
+        # Взнос за участие
+        entry_fee = tournament.get("entry_fee", 0)
+        fee_text = "Бесплатно" if entry_fee == 0 else f"<b>{entry_fee} ⭐</b>"
+
         text = f"""🏆 <b>IMMA Championship</b>
 
 📛 <b>{tournament['name']}</b>
@@ -81,6 +85,8 @@ class ChannelService:
 
 🎁 Призы:
 {prize_text}
+
+⭐ Взнос: {fee_text}
 
 📅 {format_datetime(tournament['start_time'])}
 ⏰ До начала: <b>{time_until}</b>"""

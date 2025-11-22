@@ -329,6 +329,27 @@ class Database:
             await self.conn.execute("ALTER TABLE tournament_participant_status ADD COLUMN losses INTEGER DEFAULT 0")
             await self.conn.commit()
 
+        # Миграция для entry_fee в tournaments
+        try:
+            await self.conn.execute("SELECT entry_fee FROM tournaments LIMIT 1")
+        except Exception:
+            await self.conn.execute("ALTER TABLE tournaments ADD COLUMN entry_fee INTEGER DEFAULT 0")
+            await self.conn.commit()
+
+        # Миграция для payment_charge_id в tournament_players
+        try:
+            await self.conn.execute("SELECT payment_charge_id FROM tournament_players LIMIT 1")
+        except Exception:
+            await self.conn.execute("ALTER TABLE tournament_players ADD COLUMN payment_charge_id TEXT")
+            await self.conn.commit()
+
+        # Миграция для payment_charge_id в tournament_teams
+        try:
+            await self.conn.execute("SELECT payment_charge_id FROM tournament_teams LIMIT 1")
+        except Exception:
+            await self.conn.execute("ALTER TABLE tournament_teams ADD COLUMN payment_charge_id TEXT")
+            await self.conn.commit()
+
     # ==================== ИГРОКИ ====================
 
     async def get_player(self, telegram_id: int) -> Optional[dict]:
@@ -608,17 +629,18 @@ class Database:
         registration_deadline: datetime,
         checkin_hours: int,
         created_by: int,
-        prizes: Optional[dict] = None
+        prizes: Optional[dict] = None,
+        entry_fee: int = 0
     ) -> int:
         """Создать турнир."""
         prizes_json = json.dumps(prizes) if prizes else None
         async with self.conn.execute(
             """INSERT INTO tournaments
                (name, format, maps, max_participants, prize_type, prize_amount,
-                prizes, start_time, registration_deadline, checkin_hours, created_by, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')""",
+                prizes, start_time, registration_deadline, checkin_hours, created_by, status, entry_fee)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)""",
             (name, format, json.dumps(maps), max_participants, prize_type,
-             prize_amount, prizes_json, start_time, registration_deadline, checkin_hours, created_by)
+             prize_amount, prizes_json, start_time, registration_deadline, checkin_hours, created_by, entry_fee)
         ) as cursor:
             await self.conn.commit()
             return cursor.lastrowid
@@ -774,6 +796,82 @@ class Database:
             (tournament_id, team_id)
         )
         await self.conn.commit()
+
+    async def set_player_payment(
+        self, tournament_id: int, player_id: int, payment_charge_id: str
+    ) -> None:
+        """Сохранить ID платежа для игрока."""
+        await self.conn.execute(
+            """UPDATE tournament_players SET payment_charge_id = ?
+               WHERE tournament_id = ? AND player_id = ?""",
+            (payment_charge_id, tournament_id, player_id)
+        )
+        await self.conn.commit()
+
+    async def set_team_payment(
+        self, tournament_id: int, team_id: int, payment_charge_id: str
+    ) -> None:
+        """Сохранить ID платежа для команды."""
+        await self.conn.execute(
+            """UPDATE tournament_teams SET payment_charge_id = ?
+               WHERE tournament_id = ? AND team_id = ?""",
+            (payment_charge_id, tournament_id, team_id)
+        )
+        await self.conn.commit()
+
+    async def get_player_registration(
+        self, tournament_id: int, player_id: int
+    ) -> Optional[dict]:
+        """Получить запись о регистрации игрока."""
+        async with self.conn.execute(
+            """SELECT * FROM tournament_players
+               WHERE tournament_id = ? AND player_id = ?""",
+            (tournament_id, player_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_team_registration(
+        self, tournament_id: int, team_id: int
+    ) -> Optional[dict]:
+        """Получить запись о регистрации команды."""
+        async with self.conn.execute(
+            """SELECT * FROM tournament_teams
+               WHERE tournament_id = ? AND team_id = ?""",
+            (tournament_id, team_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_tournament_collected_fees(self, tournament_id: int) -> dict:
+        """Получить информацию о собранных взносах."""
+        tournament = await self.get_tournament(tournament_id)
+        if not tournament:
+            return {"count": 0, "total": 0, "entry_fee": 0}
+
+        entry_fee = tournament.get("entry_fee", 0)
+        if tournament["format"] == "1v1":
+            async with self.conn.execute(
+                """SELECT COUNT(*) as cnt FROM tournament_players
+                   WHERE tournament_id = ? AND payment_charge_id IS NOT NULL""",
+                (tournament_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                count = row["cnt"] if row else 0
+        else:
+            async with self.conn.execute(
+                """SELECT COUNT(*) as cnt FROM tournament_teams
+                   WHERE tournament_id = ? AND payment_charge_id IS NOT NULL""",
+                (tournament_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                count = row["cnt"] if row else 0
+
+        return {
+            "count": count,
+            "total": count * entry_fee,
+            "entry_fee": entry_fee
+        }
 
     async def get_tournament_players(self, tournament_id: int) -> list[dict]:
         """Получить игроков турнира (1v1)."""

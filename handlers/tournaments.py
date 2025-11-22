@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery
 
 from database import db
 from keyboards import kb, Emoji
@@ -40,6 +40,7 @@ class CreateTournamentStates(StatesGroup):
     waiting_date = State()
     waiting_time = State()
     waiting_checkin = State()
+    waiting_entry_fee = State()
     confirm = State()
 
 
@@ -76,6 +77,12 @@ async def _show_tournament_manage(callback: CallbackQuery, tournament_id: int) -
 
     participant_count = await db.get_tournament_participant_count(tournament_id)
     text = format_tournament_info(tournament, participant_count)
+
+    # Добавляем информацию о собранных взносах для админа
+    entry_fee = tournament.get("entry_fee", 0)
+    if entry_fee > 0:
+        fees_info = await db.get_tournament_collected_fees(tournament_id)
+        text += f"\n\n{Emoji.STAR} <b>Собрано взносов:</b> {fees_info['total']} ⭐ ({fees_info['count']} шт.)"
 
     # Проверяем статус участия админа как игрока
     is_registered = False
@@ -382,6 +389,8 @@ async def callback_tournament_register(callback: CallbackQuery):
     participant_count = await db.get_tournament_participant_count(tournament_id)
     is_full = participant_count >= tournament["max_participants"]
 
+    entry_fee = tournament.get("entry_fee", 0)
+
     if tournament["format"] == "1v1":
         # Проверяем лимит турниров
         if config.MAX_ACTIVE_TOURNAMENTS_PER_PLAYER > 0:
@@ -394,13 +403,32 @@ async def callback_tournament_register(callback: CallbackQuery):
                 return
 
         if is_full:
-            # Предлагаем резерв
+            # Предлагаем резерв (без оплаты)
             success = await db.add_player_to_reserve(tournament_id, player["id"])
             if success:
                 pos = await db.get_reserve_position(tournament_id, player_id=player["id"])
                 await callback.answer(f"Турнир заполнен! Вы добавлены в резерв (позиция {pos})", show_alert=True)
             else:
                 await callback.answer("Турнир заполнен и резерв тоже!", show_alert=True)
+        elif entry_fee > 0:
+            # Проверяем, не зарегистрирован ли уже
+            existing = await db.get_player_registration(tournament_id, player["id"])
+            if existing:
+                await callback.answer("Вы уже зарегистрированы!", show_alert=True)
+                return
+
+            # Отправляем инвойс на оплату
+            await callback.bot.send_invoice(
+                chat_id=callback.from_user.id,
+                title=f"Участие в турнире",
+                description=f"Взнос за участие в турнире «{tournament['name']}»",
+                payload=f"tournament_player_{tournament_id}_{player['id']}",
+                provider_token="",  # Пустой для Telegram Stars
+                currency="XTR",
+                prices=[LabeledPrice(label="Взнос", amount=entry_fee)]
+            )
+            await callback.answer()
+            return
         else:
             success = await db.register_player_to_tournament(tournament_id, player["id"])
             if success:
@@ -435,13 +463,32 @@ async def callback_tournament_register(callback: CallbackQuery):
             return
 
         if is_full:
-            # Предлагаем резерв
+            # Предлагаем резерв (без оплаты)
             success = await db.add_team_to_reserve(tournament_id, team["id"])
             if success:
                 pos = await db.get_reserve_position(tournament_id, team_id=team["id"])
                 await callback.answer(f"Турнир заполнен! Команда добавлена в резерв (позиция {pos})", show_alert=True)
             else:
                 await callback.answer("Турнир заполнен и резерв тоже!", show_alert=True)
+        elif entry_fee > 0:
+            # Проверяем, не зарегистрирована ли уже команда
+            existing = await db.get_team_registration(tournament_id, team["id"])
+            if existing:
+                await callback.answer("Команда уже зарегистрирована!", show_alert=True)
+                return
+
+            # Отправляем инвойс на оплату (капитан платит за команду)
+            await callback.bot.send_invoice(
+                chat_id=callback.from_user.id,
+                title=f"Участие команды в турнире",
+                description=f"Взнос за участие команды «{team['name']}» в турнире «{tournament['name']}»",
+                payload=f"tournament_team_{tournament_id}_{team['id']}",
+                provider_token="",  # Пустой для Telegram Stars
+                currency="XTR",
+                prices=[LabeledPrice(label="Взнос", amount=entry_fee)]
+            )
+            await callback.answer()
+            return
         else:
             success = await db.register_team_to_tournament(tournament_id, team["id"])
             if success:
@@ -468,18 +515,150 @@ async def callback_tournament_unregister(callback: CallbackQuery):
         return
 
     player = await db.get_player(callback.from_user.id)
+    refund_success = False
+    refund_message = ""
 
     if tournament["format"] == "1v1":
+        # Получаем регистрацию для возврата
+        registration = await db.get_player_registration(tournament_id, player["id"])
+        payment_charge_id = registration.get("payment_charge_id") if registration else None
+
         await db.unregister_player_from_tournament(tournament_id, player["id"])
+
+        # Возвращаем Stars если был платёж
+        if payment_charge_id:
+            try:
+                await callback.bot.refund_star_payment(
+                    user_id=callback.from_user.id,
+                    telegram_payment_charge_id=payment_charge_id
+                )
+                refund_success = True
+                refund_message = f"\n{Emoji.STAR} Взнос {tournament.get('entry_fee', 0)} ⭐ возвращён!"
+            except Exception as e:
+                refund_message = f"\n{Emoji.WARNING} Ошибка возврата взноса"
     else:
         team = await db.get_player_team_by_format(player["id"], tournament["format"])
         if team and team["captain_id"] == player["id"]:
+            # Получаем регистрацию для возврата
+            registration = await db.get_team_registration(tournament_id, team["id"])
+            payment_charge_id = registration.get("payment_charge_id") if registration else None
+
             await db.unregister_team_from_tournament(tournament_id, team["id"])
 
-    await callback.answer("Регистрация отменена!", show_alert=True)
+            # Возвращаем Stars если был платёж
+            if payment_charge_id:
+                try:
+                    await callback.bot.refund_star_payment(
+                        user_id=callback.from_user.id,
+                        telegram_payment_charge_id=payment_charge_id
+                    )
+                    refund_success = True
+                    refund_message = f"\n{Emoji.STAR} Взнос {tournament.get('entry_fee', 0)} ⭐ возвращён!"
+                except Exception as e:
+                    refund_message = f"\n{Emoji.WARNING} Ошибка возврата взноса"
+
+    await callback.answer(f"Регистрация отменена!{refund_message}", show_alert=True)
     # Обновляем пост в канале
     await _update_channel_post_if_exists(tournament_id, callback.bot)
     await _show_tournament_view(callback, tournament_id)
+
+
+# ==================== ПЛАТЕЖИ ====================
+
+@router.pre_checkout_query()
+async def process_pre_checkout(pre_checkout: PreCheckoutQuery):
+    """Проверка перед оплатой."""
+    payload = pre_checkout.invoice_payload
+
+    # Проверяем формат payload
+    if not payload.startswith("tournament_"):
+        await pre_checkout.answer(ok=False, error_message="Неверный платёж")
+        return
+
+    parts = payload.split("_")
+    if len(parts) != 4:
+        await pre_checkout.answer(ok=False, error_message="Неверный формат платежа")
+        return
+
+    reg_type = parts[1]  # "player" или "team"
+    tournament_id = int(parts[2])
+    participant_id = int(parts[3])
+
+    # Проверяем турнир
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament or tournament["status"] != "open":
+        await pre_checkout.answer(ok=False, error_message="Регистрация на турнир закрыта")
+        return
+
+    # Проверяем, что ещё есть места
+    participant_count = await db.get_tournament_participant_count(tournament_id)
+    if participant_count >= tournament["max_participants"]:
+        await pre_checkout.answer(ok=False, error_message="Турнир уже заполнен")
+        return
+
+    # Проверяем, что участник ещё не зарегистрирован
+    if reg_type == "player":
+        existing = await db.get_player_registration(tournament_id, participant_id)
+    else:
+        existing = await db.get_team_registration(tournament_id, participant_id)
+
+    if existing:
+        await pre_checkout.answer(ok=False, error_message="Уже зарегистрирован")
+        return
+
+    # Всё ок, разрешаем оплату
+    await pre_checkout.answer(ok=True)
+
+
+@router.message(F.successful_payment)
+async def process_successful_payment(message: Message):
+    """Обработка успешного платежа."""
+    payment = message.successful_payment
+    payload = payment.invoice_payload
+
+    if not payload.startswith("tournament_"):
+        return
+
+    parts = payload.split("_")
+    if len(parts) != 4:
+        return
+
+    reg_type = parts[1]  # "player" или "team"
+    tournament_id = int(parts[2])
+    participant_id = int(parts[3])
+
+    payment_charge_id = payment.telegram_payment_charge_id
+
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        return
+
+    if reg_type == "player":
+        # Регистрируем игрока
+        success = await db.register_player_to_tournament(tournament_id, participant_id)
+        if success:
+            await db.set_player_payment(tournament_id, participant_id, payment_charge_id)
+            await message.answer(
+                f"{Emoji.CHECK} <b>Оплата прошла успешно!</b>\n\n"
+                f"Вы зарегистрированы на турнир «{tournament['name']}».\n"
+                f"Взнос: {payment.total_amount} ⭐",
+                parse_mode="HTML"
+            )
+            await _update_channel_post_if_exists(tournament_id, message.bot)
+    else:
+        # Регистрируем команду
+        success = await db.register_team_to_tournament(tournament_id, participant_id)
+        if success:
+            await db.set_team_payment(tournament_id, participant_id, payment_charge_id)
+            team = await db.get_team(participant_id)
+            team_name = team["name"] if team else "Команда"
+            await message.answer(
+                f"{Emoji.CHECK} <b>Оплата прошла успешно!</b>\n\n"
+                f"Команда «{team_name}» зарегистрирована на турнир «{tournament['name']}».\n"
+                f"Взнос: {payment.total_amount} ⭐",
+                parse_mode="HTML"
+            )
+            await _update_channel_post_if_exists(tournament_id, message.bot)
 
 
 @router.callback_query(F.data.regexp(r"^tournament_checkin_(\d+)$"))
@@ -1374,9 +1553,79 @@ async def process_checkin_select(callback: CallbackQuery, state: FSMContext):
     checkin_hours = int(callback.data.replace("t_checkin_", ""))
     await state.update_data(checkin_hours=checkin_hours)
 
-    # Показываем итоговую информацию
-    data = await state.get_data()
+    # Переходим к выбору взноса
+    text = (
+        f"<b>{Emoji.STAR} Взнос за участие</b>\n\n"
+        f"Укажите сумму взноса в Telegram Stars.\n"
+        f"Выберите вариант или введите свою сумму.\n\n"
+        f"<i>0 = бесплатное участие</i>"
+    )
 
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.entry_fee_select(),
+        parse_mode="HTML"
+    )
+    await state.set_state(CreateTournamentStates.waiting_entry_fee)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("t_fee_"), CreateTournamentStates.waiting_entry_fee)
+async def process_entry_fee_select(callback: CallbackQuery, state: FSMContext):
+    """Выбор взноса из готовых вариантов."""
+    fee_value = callback.data.replace("t_fee_", "")
+
+    if fee_value == "custom":
+        await callback.message.edit_text(
+            f"<b>{Emoji.STAR} Введите сумму взноса</b>\n\n"
+            f"Укажите число (количество Stars):",
+            reply_markup=kb.back_button("admin_create_tournament"),
+            parse_mode="HTML"
+        )
+        return
+
+    entry_fee = int(fee_value)
+    await state.update_data(entry_fee=entry_fee)
+    await _show_tournament_confirm(callback, state)
+
+
+@router.message(CreateTournamentStates.waiting_entry_fee)
+async def process_entry_fee_input(message: Message, state: FSMContext):
+    """Ввод произвольной суммы взноса."""
+    try:
+        entry_fee = int(message.text.strip())
+        if entry_fee < 0:
+            raise ValueError()
+    except ValueError:
+        await message.answer(
+            f"{Emoji.WARNING} Введите положительное число!",
+            reply_markup=kb.back_button("admin_create_tournament"),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.update_data(entry_fee=entry_fee)
+
+    # Показываем подтверждение (нужно создать новое сообщение)
+    data = await state.get_data()
+    text, markup = await _get_confirm_content(data)
+
+    await message.answer(text, reply_markup=markup, parse_mode="HTML")
+    await state.set_state(CreateTournamentStates.confirm)
+
+
+async def _show_tournament_confirm(callback: CallbackQuery, state: FSMContext):
+    """Показать экран подтверждения создания турнира."""
+    data = await state.get_data()
+    text, markup = await _get_confirm_content(data)
+
+    await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+    await state.set_state(CreateTournamentStates.confirm)
+    await callback.answer()
+
+
+async def _get_confirm_content(data: dict) -> tuple[str, any]:
+    """Получить текст и клавиатуру для подтверждения."""
     format_name = config.TOURNAMENT_FORMATS[data["format"]]["name"]
     maps_text = ", ".join(m.replace("de_", "") for m in data["maps"])
 
@@ -1390,7 +1639,9 @@ async def process_checkin_select(callback: CallbackQuery, state: FSMContext):
             prize_lines.append(f"{emoji} {prize}")
         prize_text = "\n".join(prize_lines)
 
-    checkin_text = "Без check-in" if checkin_hours == 0 else f"За {checkin_hours} ч."
+    checkin_text = "Без check-in" if data.get("checkin_hours", 0) == 0 else f"За {data['checkin_hours']} ч."
+    entry_fee = data.get("entry_fee", 0)
+    fee_text = "Бесплатно" if entry_fee == 0 else f"{entry_fee} ⭐"
 
     text = (
         f"<b>{Emoji.CHECK} Подтверждение создания</b>\n\n"
@@ -1401,15 +1652,10 @@ async def process_checkin_select(callback: CallbackQuery, state: FSMContext):
         f"{Emoji.GIFT} <b>Призы:</b>\n{prize_text}\n"
         f"{Emoji.CALENDAR} <b>Старт:</b> {format_datetime(data['start_time'])}\n"
         f"{Emoji.BELL} <b>Check-in:</b> {checkin_text}\n"
+        f"{Emoji.STAR} <b>Взнос:</b> {fee_text}\n"
     )
 
-    await callback.message.edit_text(
-        text,
-        reply_markup=kb.tournament_confirm(data),
-        parse_mode="HTML"
-    )
-    await state.set_state(CreateTournamentStates.confirm)
-    await callback.answer()
+    return text, kb.tournament_confirm(data)
 
 
 @router.callback_query(F.data == "t_confirm_create", CreateTournamentStates.confirm)
@@ -1434,7 +1680,8 @@ async def process_tournament_confirm(callback: CallbackQuery, state: FSMContext)
         registration_deadline=registration_deadline,
         checkin_hours=data["checkin_hours"],
         created_by=player["id"] if player else callback.from_user.id,
-        prizes=data.get("prizes")
+        prizes=data.get("prizes"),
+        entry_fee=data.get("entry_fee", 0)
     )
 
     await db.log_action(callback.from_user.id, "tournament_create", f"ID: {tournament_id}")
