@@ -796,7 +796,43 @@ async def callback_admin_participants(callback: CallbackQuery):
 
 @router.callback_query(F.data == "admin_create_tournament")
 async def callback_admin_create_tournament(callback: CallbackQuery, state: FSMContext):
-    """Начало создания турнира."""
+    """Меню создания турнира."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.clear()
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
+        f"Выберите способ создания:",
+        reply_markup=kb.create_tournament_menu(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "t_create")
+async def callback_t_create(callback: CallbackQuery, state: FSMContext):
+    """Возврат к меню создания турнира."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.clear()
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
+        f"Выберите способ создания:",
+        reply_markup=kb.create_tournament_menu(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "t_create_new")
+async def callback_t_create_new(callback: CallbackQuery, state: FSMContext):
+    """Создание нового турнира с нуля."""
     if not await db.is_admin(callback.from_user.id):
         await callback.answer("Нет доступа!", show_alert=True)
         return
@@ -807,10 +843,33 @@ async def callback_admin_create_tournament(callback: CallbackQuery, state: FSMCo
     await callback.message.edit_text(
         f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
         f"<b>Шаг 1:</b> Введите название турнира:",
-        reply_markup=kb.back_button("admin"),
+        reply_markup=kb.back_button("t_create"),
         parse_mode="HTML"
     )
     await state.set_state(CreateTournamentStates.waiting_name)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "t_create_from_prev")
+async def callback_t_create_from_prev(callback: CallbackQuery):
+    """Список прошлых турниров для дублирования."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    # Получаем последние турниры
+    tournaments = await db.get_recent_tournaments(limit=10)
+
+    if not tournaments:
+        await callback.answer("Нет прошлых турниров!", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.REFRESH} Создать на основе</b>\n\n"
+        f"Выберите турнир для копирования:",
+        reply_markup=kb.prev_tournaments_list(tournaments),
+        parse_mode="HTML"
+    )
     await callback.answer()
 
 

@@ -76,6 +76,15 @@ class Config:
     # Время до начала для статуса "Скоро начало" (минуты)
     STARTING_SOON_MINUTES = 15
 
+    # Максимум одновременных активных матчей
+    MAX_ACTIVE_MATCHES = 2
+
+    # Таймер матча (минуты, 0 = без таймера)
+    MATCH_TIMER_MINUTES = 45
+
+    # Напоминание за N минут до конца таймера
+    MATCH_REMINDER_MINUTES = 5
+
     # Шаблоны турниров
     TOURNAMENT_TEMPLATES = {
         "evening_1v1": {

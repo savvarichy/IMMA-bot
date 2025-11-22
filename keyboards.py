@@ -560,7 +560,15 @@ class Keyboards:
 
         elif status == "active":
             builder.button(
-                text=f"{Emoji.TARGET} Матчи",
+                text=f"{Emoji.PLAY} Очередь матчей",
+                callback_data=f"admin_t_queue_{tournament['id']}"
+            )
+            builder.button(
+                text=f"{Emoji.PEOPLE} Лобби",
+                callback_data=f"admin_t_lobby_{tournament['id']}"
+            )
+            builder.button(
+                text=f"{Emoji.TARGET} Все матчи",
                 callback_data=f"admin_t_matches_{tournament['id']}"
             )
             builder.button(
@@ -584,21 +592,9 @@ class Keyboards:
             callback_data=f"admin_t_participants_{tournament['id']}"
         )
 
-        if status not in ("finished", "cancelled"):
-            builder.button(
-                text=f"{Emoji.SEND} Рассылка",
-                callback_data=f"admin_t_broadcast_{tournament['id']}"
-            )
-
         builder.button(
             text=f"{Emoji.INBOX} Экспорт списка",
             callback_data=f"admin_t_export_{tournament['id']}"
-        )
-
-        # Дублировать турнир
-        builder.button(
-            text=f"{Emoji.REFRESH} Дублировать",
-            callback_data=f"admin_t_duplicate_{tournament['id']}"
         )
 
         if status in ("draft", "open"):
@@ -1158,6 +1154,141 @@ class Keyboards:
         builder.button(
             text=f"{Emoji.BACK} Назад",
             callback_data="admin"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    # ==================== ОЧЕРЕДЬ МАТЧЕЙ ====================
+
+    @staticmethod
+    def match_queue(matches: list[dict], tournament_id: int, participants: dict, active_count: int, max_active: int) -> InlineKeyboardMarkup:
+        """Очередь матчей с кнопками запуска."""
+        builder = InlineKeyboardBuilder()
+
+        for i, match in enumerate(matches[:8]):  # Лимит 8
+            p1 = participants.get(match["participant1_id"], "TBD")
+            p2 = participants.get(match["participant2_id"], "TBD")
+            pos = i + 1
+
+            # Можно запустить, если не превышен лимит
+            if active_count < max_active:
+                builder.button(
+                    text=f"#{pos} {p1} vs {p2}",
+                    callback_data=f"match_start_{match['id']}"
+                )
+            else:
+                builder.button(
+                    text=f"#{pos} ⏳ {p1} vs {p2}",
+                    callback_data=f"match_info_{match['id']}"
+                )
+
+        if active_count >= max_active:
+            builder.button(
+                text=f"⚠️ Лимит: {active_count}/{max_active} активных матчей",
+                callback_data="noop"
+            )
+
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=f"admin_t_manage_{tournament_id}"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def match_start_confirm(match_id: int, tournament_id: int) -> InlineKeyboardMarkup:
+        """Подтверждение запуска матча с вводом ссылки."""
+        builder = InlineKeyboardBuilder()
+        builder.button(
+            text=f"{Emoji.PLAY} Запустить без ссылки",
+            callback_data=f"match_go_{match_id}"
+        )
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=f"admin_t_queue_{tournament_id}"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    # ==================== ЛОББИ ====================
+
+    @staticmethod
+    def lobby_admin(tournament_id: int, ready_players: list, all_participants: int) -> InlineKeyboardMarkup:
+        """Админское меню лобби."""
+        builder = InlineKeyboardBuilder()
+        builder.button(
+            text=f"🟢 Готовы: {len(ready_players)}/{all_participants}",
+            callback_data="noop"
+        )
+        builder.button(
+            text=f"{Emoji.BELL} Напомнить всем",
+            callback_data=f"lobby_remind_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=f"admin_t_manage_{tournament_id}"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def lobby_player(tournament_id: int, is_ready: bool) -> InlineKeyboardMarkup:
+        """Кнопки лобби для игрока."""
+        builder = InlineKeyboardBuilder()
+        if is_ready:
+            builder.button(
+                text=f"{Emoji.CLOCK} Отошёл",
+                callback_data=f"lobby_away_{tournament_id}"
+            )
+        else:
+            builder.button(
+                text=f"{Emoji.CHECK} Я готов!",
+                callback_data=f"lobby_ready_{tournament_id}"
+            )
+        builder.button(
+            text=f"{Emoji.BACK} К турниру",
+            callback_data=f"tournament_{tournament_id}"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    # ==================== СОЗДАНИЕ ТУРНИРА ====================
+
+    @staticmethod
+    def create_tournament_menu() -> InlineKeyboardMarkup:
+        """Меню создания турнира."""
+        builder = InlineKeyboardBuilder()
+        builder.button(
+            text=f"{Emoji.PLUS} Новый турнир",
+            callback_data="t_create_new"
+        )
+        builder.button(
+            text=f"{Emoji.REFRESH} На основе прошлого",
+            callback_data="t_create_from_prev"
+        )
+        builder.button(
+            text=f"{Emoji.STAR} Из шаблона",
+            callback_data="templates_list"
+        )
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data="admin"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def prev_tournaments_list(tournaments: list[dict]) -> InlineKeyboardMarkup:
+        """Список прошлых турниров для дублирования."""
+        builder = InlineKeyboardBuilder()
+        for t in tournaments[:10]:  # Лимит 10
+            builder.button(
+                text=f"{t['name']}",
+                callback_data=f"t_duplicate_{t['id']}"
+            )
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data="t_create"
         )
         builder.adjust(1)
         return builder.as_markup()

@@ -119,7 +119,7 @@ class Database:
                 UNIQUE(tournament_id, team_id)
             );
 
-            -- Матчи
+            -- Матчи (статусы: queued, active, completed)
             CREATE TABLE IF NOT EXISTS matches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 tournament_id INTEGER NOT NULL,
@@ -132,10 +132,26 @@ class Database:
                 score2 INTEGER,
                 winner_id INTEGER,
                 map TEXT,
-                status TEXT DEFAULT 'pending',
+                status TEXT DEFAULT 'queued',
+                queue_position INTEGER DEFAULT 0,
+                server_link TEXT,
+                started_at TIMESTAMP,
                 scheduled_time TIMESTAMP,
                 completed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
+            );
+
+            -- Лобби (готовность игроков: ready, away)
+            CREATE TABLE IF NOT EXISTS lobby (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tournament_id INTEGER NOT NULL,
+                player_id INTEGER NOT NULL,
+                status TEXT DEFAULT 'away',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+                FOREIGN KEY (player_id) REFERENCES players(id),
+                UNIQUE(tournament_id, player_id)
             );
 
             -- Шаблоны турниров (пользовательские)
@@ -544,6 +560,23 @@ class Database:
         async with self.conn.execute(
             "SELECT * FROM tournaments WHERE status = ? ORDER BY start_time",
             (status,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            result = []
+            for r in rows:
+                data = dict(r)
+                data["maps"] = json.loads(data["maps"])
+                if data.get("prizes"):
+                    data["prizes"] = json.loads(data["prizes"])
+                result.append(data)
+            return result
+
+    async def get_recent_tournaments(self, limit: int = 10) -> list[dict]:
+        """Получить последние турниры для дублирования."""
+        async with self.conn.execute(
+            """SELECT * FROM tournaments
+               ORDER BY created_at DESC LIMIT ?""",
+            (limit,)
         ) as cursor:
             rows = await cursor.fetchall()
             result = []
@@ -1413,6 +1446,128 @@ class Database:
             stats["active_bans"] = row["cnt"] if row else 0
 
         return stats
+
+    # ==================== ОЧЕРЕДЬ МАТЧЕЙ ====================
+
+    async def get_queued_matches(self, tournament_id: int) -> list[dict]:
+        """Получить матчи в очереди."""
+        async with self.conn.execute(
+            """SELECT * FROM matches
+               WHERE tournament_id = ? AND status = 'queued'
+               AND participant1_id IS NOT NULL AND participant2_id IS NOT NULL
+               ORDER BY round, match_number""",
+            (tournament_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_active_matches(self, tournament_id: int) -> list[dict]:
+        """Получить активные матчи."""
+        async with self.conn.execute(
+            """SELECT * FROM matches
+               WHERE tournament_id = ? AND status = 'active'
+               ORDER BY started_at""",
+            (tournament_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_active_matches_count(self, tournament_id: int) -> int:
+        """Количество активных матчей."""
+        async with self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM matches WHERE tournament_id = ? AND status = 'active'",
+            (tournament_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["cnt"] if row else 0
+
+    async def start_match(self, match_id: int, server_link: str = None) -> bool:
+        """Активировать матч (начать игру)."""
+        from datetime import datetime
+        await self.conn.execute(
+            """UPDATE matches SET status = 'active', started_at = ?, server_link = ?
+               WHERE id = ?""",
+            (datetime.now(), server_link, match_id)
+        )
+        await self.conn.commit()
+        return True
+
+    async def complete_match(self, match_id: int) -> None:
+        """Завершить матч."""
+        from datetime import datetime
+        await self.conn.execute(
+            "UPDATE matches SET status = 'completed', completed_at = ? WHERE id = ?",
+            (datetime.now(), match_id)
+        )
+        await self.conn.commit()
+
+    async def get_match_queue_position(self, match_id: int) -> int:
+        """Получить позицию матча в очереди."""
+        match = await self.get_match(match_id)
+        if not match or match["status"] != "queued":
+            return 0
+
+        async with self.conn.execute(
+            """SELECT COUNT(*) as cnt FROM matches
+               WHERE tournament_id = ? AND status = 'queued'
+               AND participant1_id IS NOT NULL AND participant2_id IS NOT NULL
+               AND (round < ? OR (round = ? AND match_number < ?))""",
+            (match["tournament_id"], match["round"], match["round"], match["match_number"])
+        ) as cursor:
+            row = await cursor.fetchone()
+            return (row["cnt"] if row else 0) + 1
+
+    async def update_match_server_link(self, match_id: int, server_link: str) -> None:
+        """Обновить ссылку на сервер."""
+        await self.conn.execute(
+            "UPDATE matches SET server_link = ? WHERE id = ?",
+            (server_link, match_id)
+        )
+        await self.conn.commit()
+
+    # ==================== ЛОББИ ====================
+
+    async def set_player_lobby_status(self, tournament_id: int, player_id: int, status: str) -> None:
+        """Установить статус игрока в лобби."""
+        from datetime import datetime
+        await self.conn.execute(
+            """INSERT INTO lobby (tournament_id, player_id, status, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(tournament_id, player_id)
+               DO UPDATE SET status = ?, updated_at = ?""",
+            (tournament_id, player_id, status, datetime.now(), status, datetime.now())
+        )
+        await self.conn.commit()
+
+    async def get_player_lobby_status(self, tournament_id: int, player_id: int) -> str:
+        """Получить статус игрока в лобби."""
+        async with self.conn.execute(
+            "SELECT status FROM lobby WHERE tournament_id = ? AND player_id = ?",
+            (tournament_id, player_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["status"] if row else "away"
+
+    async def get_ready_players(self, tournament_id: int) -> list[dict]:
+        """Получить готовых игроков в лобби."""
+        async with self.conn.execute(
+            """SELECT l.*, p.nickname, p.telegram_id
+               FROM lobby l
+               JOIN players p ON l.player_id = p.id
+               WHERE l.tournament_id = ? AND l.status = 'ready'
+               ORDER BY l.updated_at""",
+            (tournament_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def clear_tournament_lobby(self, tournament_id: int) -> None:
+        """Очистить лобби турнира."""
+        await self.conn.execute(
+            "DELETE FROM lobby WHERE tournament_id = ?",
+            (tournament_id,)
+        )
+        await self.conn.commit()
 
 
 # Глобальный экземпляр
