@@ -804,23 +804,42 @@ async def callback_admin_finish_tournament(callback: CallbackQuery):
 
     # Получаем финальную статистику участников
     standings = await db.get_tournament_standings(tournament_id)
-    remaining = [s for s in standings if s["status"] != "eliminated"]
 
-    # Если остался один участник - он победитель
-    winner_name = None
-    if len(remaining) == 1:
-        winner = remaining[0]
-        participant_type = winner["participant_type"]
+    # Сортируем: по победам (убыв), затем по поражениям (возр)
+    sorted_standings = sorted(
+        standings,
+        key=lambda x: (-x.get("wins", 0), x.get("losses", 0))
+    )
 
-        if participant_type == "player":
+    # Получаем имена участников
+    participants_names = {}
+    for s in sorted_standings:
+        if s["participant_type"] == "player":
+            p = await db.get_player_by_id(s["participant_id"])
+            participants_names[s["participant_id"]] = p["nickname"] if p else f"ID:{s['participant_id']}"
+        else:
+            t = await db.get_team(s["participant_id"])
+            participants_names[s["participant_id"]] = t["name"] if t else f"ID:{s['participant_id']}"
+
+    # Получаем призы турнира
+    prizes = tournament.get("prizes", []) or []
+    if isinstance(prizes, str):
+        import json
+        try:
+            prizes = json.loads(prizes)
+        except Exception:
+            prizes = []
+
+    # Обновляем статистику победителя (1 место)
+    if sorted_standings:
+        winner = sorted_standings[0]
+        if winner["participant_type"] == "player":
             player = await db.get_player_by_id(winner["participant_id"])
             if player:
-                winner_name = player["nickname"]
                 await db.increment_player_stats(player["telegram_id"], won=True)
         else:
             team = await db.get_team(winner["participant_id"])
             if team:
-                winner_name = team["name"]
                 await db.update_team(team["id"], tournaments_won=team.get("tournaments_won", 0) + 1)
 
     # Обновляем статус турнира
@@ -828,25 +847,38 @@ async def callback_admin_finish_tournament(callback: CallbackQuery):
     await db.log_action(callback.from_user.id, "tournament_finish", f"ID: {tournament_id}")
 
     # Формируем текст результатов
-    text = f"<b>{Emoji.TROPHY} Турнир завершён!</b>\n\n"
-    text += f"<b>{tournament['name']}</b>\n\n"
+    text = f"<b>🏆 ТУРНИР ЗАВЕРШЁН!</b>\n\n"
+    text += f"<b>{escape_html(tournament['name'])}</b>\n"
+    text += f"Формат: {tournament['format']}\n\n"
 
-    if winner_name:
-        text += f"🥇 <b>Победитель:</b> {escape_html(winner_name)}\n\n"
+    # Медали для мест
+    place_medals = ["🥇", "🥈", "🥉"]
 
-    # Показываем топ участников по победам
-    text += "<b>Результаты:</b>\n"
-    sorted_standings = sorted(standings, key=lambda x: x["wins"], reverse=True)
-    for i, s in enumerate(sorted_standings[:10], 1):
-        if s["participant_type"] == "player":
-            p = await db.get_player_by_id(s["participant_id"])
-            name = p["nickname"] if p else f"ID:{s['participant_id']}"
+    text += "<b>📊 РЕЗУЛЬТАТЫ:</b>\n\n"
+
+    for i, s in enumerate(sorted_standings):
+        pid = s["participant_id"]
+        name = participants_names.get(pid, f"ID:{pid}")
+        wins = s.get("wins", 0)
+        losses = s.get("losses", 0)
+
+        # Медаль или номер места
+        if i < 3:
+            place_icon = place_medals[i]
         else:
-            t = await db.get_team(s["participant_id"])
-            name = t["name"] if t else f"ID:{s['participant_id']}"
+            place_icon = f"{i + 1}."
 
-        status_icon = "❌" if s["status"] == "eliminated" else "🟢"
-        text += f"{i}. {status_icon} {escape_html(name)} - {s['wins']}W\n"
+        # Приз для этого места
+        prize_text = ""
+        if i < len(prizes) and prizes[i]:
+            prize_text = f" — <b>{prizes[i]}</b>"
+
+        text += f"{place_icon} {escape_html(name)} ({wins}W/{losses}L){prize_text}\n"
+
+    # Статистика турнира
+    completed_matches = await db.get_tournament_matches(tournament_id)
+    completed_count = len([m for m in completed_matches if m["status"] == "completed"])
+    text += f"\n<b>Всего матчей:</b> {completed_count}"
 
     await callback.message.edit_text(
         text,

@@ -315,14 +315,19 @@ async def callback_match_set_score(callback: CallbackQuery, state: FSMContext):
 async def callback_match_custom_score(callback: CallbackQuery, state: FSMContext):
     """Ввод своего счёта."""
     match_id = int(callback.data.split("_")[2])
-    await state.update_data(match_id=match_id)
+
+    # Получаем матч для определения правильной кнопки назад
+    match = await db.get_match(match_id)
+    back_cb = f"admin_t_manage_{match['tournament_id']}" if match else "admin"
+
+    await state.update_data(match_id=match_id, tournament_id=match["tournament_id"] if match else None)
 
     await callback.message.edit_text(
         f"<b>{Emoji.PENCIL} Ввод счёта</b>\n\n"
         f"Введите счёт в формате:\n"
         f"<code>счёт1:счёт2</code>\n\n"
         f"Например: <code>16:14</code>",
-        reply_markup=kb.back_button("admin"),
+        reply_markup=kb.back_button(back_cb),
         parse_mode="HTML"
     )
     await state.set_state(MatchResultStates.waiting_score)
@@ -372,18 +377,13 @@ async def process_custom_score(message: Message, state: FSMContext):
     # Проводим победителя
     await advance_winner(match, winner_id)
 
+    tournament_id = match["tournament_id"]
     await state.clear()
-
-    # Проверяем завершение турнира
-    pending = await db.get_pending_matches(match["tournament_id"])
-
-    if not pending:
-        await db.update_tournament_status(match["tournament_id"], "finished")
 
     await message.answer(
         f"{Emoji.CHECK} Результат сохранён!\n"
         f"Счёт: {score1}:{score2}",
-        reply_markup=kb.back_button("admin"),
+        reply_markup=kb.back_button(f"admin_t_manage_{tournament_id}"),
         parse_mode="HTML"
     )
 

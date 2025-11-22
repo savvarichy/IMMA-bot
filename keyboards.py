@@ -1034,7 +1034,7 @@ class Keyboards:
 
         builder.button(
             text=f"{Emoji.BACK} Назад",
-            callback_data="admin"
+            callback_data="admin_create_tournament"
         )
         builder.adjust(1)
         return builder.as_markup()
@@ -1058,7 +1058,7 @@ class Keyboards:
             [
                 InlineKeyboardButton(
                     text=f"{Emoji.BACK} Назад",
-                    callback_data="admin_from_template"
+                    callback_data="templates_list"
                 )
             ]
         ])

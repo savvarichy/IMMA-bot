@@ -254,6 +254,7 @@ class Database:
                 participant_type TEXT NOT NULL,
                 status TEXT DEFAULT 'ready',
                 wins INTEGER DEFAULT 0,
+                losses INTEGER DEFAULT 0,
                 current_match_id INTEGER,
                 eliminated_at TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -312,6 +313,13 @@ class Database:
             await self.conn.execute("SELECT scheduled_time FROM matches LIMIT 1")
         except Exception:
             await self.conn.execute("ALTER TABLE matches ADD COLUMN scheduled_time TIMESTAMP")
+            await self.conn.commit()
+
+        # Миграция для losses в tournament_participant_status
+        try:
+            await self.conn.execute("SELECT losses FROM tournament_participant_status LIMIT 1")
+        except Exception:
+            await self.conn.execute("ALTER TABLE tournament_participant_status ADD COLUMN losses INTEGER DEFAULT 0")
             await self.conn.commit()
 
     # ==================== ИГРОКИ ====================
@@ -1725,6 +1733,20 @@ class Database:
         )
         await self.conn.commit()
 
+    async def increment_participant_losses(
+        self,
+        tournament_id: int,
+        participant_id: int,
+        participant_type: str
+    ) -> None:
+        """Увеличить счётчик поражений участника."""
+        await self.conn.execute(
+            """UPDATE tournament_participant_status SET losses = losses + 1, updated_at = ?
+               WHERE tournament_id = ? AND participant_id = ? AND participant_type = ?""",
+            (datetime.now(), tournament_id, participant_id, participant_type)
+        )
+        await self.conn.commit()
+
     async def restore_participant(
         self,
         tournament_id: int,
@@ -1814,7 +1836,7 @@ class Database:
         score1: int,
         score2: int
     ) -> bool:
-        """Завершить матч и обновить статусы участников."""
+        """Завершить матч и обновить статусы участников (оба возвращаются в ready)."""
         from datetime import datetime
 
         match = await self.get_match(match_id)
@@ -1827,17 +1849,22 @@ class Database:
         # Обновляем матч
         await self.set_match_result(match_id, score1, score2, winner_id)
 
-        # Обновляем статусы: победитель → ready, проигравший → eliminated
+        # Оба участника возвращаются в ready (турнир завершается только вручную)
         await self.set_participant_status(
             match["tournament_id"], winner_id, match["participant1_type"], "ready"
         )
         await self.set_participant_status(
-            match["tournament_id"], loser_id, match["participant1_type"], "eliminated"
+            match["tournament_id"], loser_id, match["participant1_type"], "ready"
         )
 
-        # Увеличиваем счётчик побед
+        # Увеличиваем счётчик побед победителю
         await self.increment_participant_wins(
             match["tournament_id"], winner_id, match["participant1_type"]
+        )
+
+        # Увеличиваем счётчик поражений проигравшему
+        await self.increment_participant_losses(
+            match["tournament_id"], loser_id, match["participant1_type"]
         )
 
         return True
