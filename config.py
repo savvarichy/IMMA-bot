@@ -32,7 +32,7 @@ class Config:
     ]
 
     # Варианты количества участников
-    PARTICIPANT_OPTIONS = [8, 16, 32, 64]
+    PARTICIPANT_OPTIONS = [2, 4, 8, 16, 32, 64]
 
     # Типы призов
     PRIZE_TYPES = {
