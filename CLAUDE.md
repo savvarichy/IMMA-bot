@@ -68,12 +68,14 @@ python bot.py
    - **Другое** → **Админы призов** — укажите контакты для выдачи призов
    - **Создать турнир** — создайте первый турнир
 
-### 7. Привязка канала (опционально)
+### 7. Привязка канала (обязательно для проверки подписки)
 
 1. Создайте канал в Telegram
 2. Добавьте бота в администраторы канала (с правом публикации)
 3. В боте: **Админ** → **Другое** → **Настройки канала**
 4. Перешлите любое сообщение из канала боту
+
+**Важно:** После привязки канала пользователи смогут использовать бота только после подписки на канал.
 
 ### Запуск в фоне (Linux)
 
@@ -260,6 +262,53 @@ All configuration in `Config` class, loaded from environment variables:
 
 **Maps:** de_mirage, de_inferno, de_nuke, de_overpass, de_vertigo, de_ancient, de_anubis, de_dust2
 
+## Key Features
+
+### Channel Subscription Requirement
+
+If a channel is linked, users must subscribe to it before using the bot:
+
+- Checked on `/start`, main menu, and deep links
+- Users see "Subscribe" + "I subscribed" buttons
+- Admins are also required to subscribe
+- If no channel linked — bot works without subscription check
+- If bot is not admin in channel — check is skipped (graceful fallback)
+
+```python
+from utils import check_channel_subscription
+
+is_subscribed, channel_link = await check_channel_subscription(bot, user_id)
+if not is_subscribed:
+    # Show subscription required message
+```
+
+### Admin Management
+
+Three types of admins exist:
+
+1. **Owner** (`OWNER_ID` in .env) — full access, can remove DB admins
+2. **Config admins** (`ADMIN_IDS` in .env) — cannot be removed via bot
+3. **DB admins** (added via bot) — can be removed by owner
+
+View all admins: **Admin Panel** → **Other** → **Admins**
+
+### Entry Fees (Telegram Stars)
+
+Tournaments can have entry fees paid in Telegram Stars:
+
+- Admin sets fee when creating tournament (0, 10, 25, 50, 100 or custom)
+- For team tournaments, captain pays for entire team
+- Automatic refund on unregister (before tournament starts)
+- No refund after tournament starts
+- Admin panel shows total collected fees
+
+```python
+# Tournament has entry_fee field
+tournament = await db.get_tournament(tournament_id)
+if tournament["entry_fee"] > 0:
+    # Send invoice...
+```
+
 ## Key Workflows
 
 ### Tournament Lifecycle
@@ -443,5 +492,47 @@ BOT_TOKEN=your_bot_token_here
 ADMIN_IDS=123456789,987654321
 OWNER_ID=123456789
 TIMEZONE=Europe/Moscow
+DATABASE_PATH=bot_database.db
+```
+
+## Database Maintenance
+
+### Full Reset (delete all data)
+
+```bash
+# Stop bot (Ctrl+C)
+rm bot_database.db
+# Start bot — fresh database will be created
+python bot.py
+```
+
+### Delete Only Tournaments (keep players)
+
+```bash
+sqlite3 bot_database.db
+```
+
+```sql
+DELETE FROM matches;
+DELETE FROM tournament_players;
+DELETE FROM tournament_teams;
+DELETE FROM tournament_participant_status;
+DELETE FROM tournament_reserve_players;
+DELETE FROM tournament_reserve_teams;
+DELETE FROM tournament_posts;
+DELETE FROM lobby;
+DELETE FROM tournaments;
+.quit
+```
+
+### Separate Test Database
+
+Use different database for testing:
+
+```env
+# In .env for testing
+DATABASE_PATH=test_database.db
+
+# For production
 DATABASE_PATH=bot_database.db
 ```
