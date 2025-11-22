@@ -982,6 +982,18 @@ async def callback_mm_go(callback: CallbackQuery, state: FSMContext):
     tournament = await db.get_tournament(tournament_id)
     participant_type = "player" if tournament["format"] == "1v1" else "team"
 
+    # Проверяем что оба участника всё ещё ready
+    p1_status = await db.get_participant_status(tournament_id, p1_id, participant_type)
+    p2_status = await db.get_participant_status(tournament_id, p2_id, participant_type)
+
+    if not p1_status or p1_status["status"] != "ready":
+        await callback.answer("Первый участник уже не готов!", show_alert=True)
+        return
+
+    if not p2_status or p2_status["status"] != "ready":
+        await callback.answer("Второй участник уже не готов!", show_alert=True)
+        return
+
     # Создаём матч
     match_id = await db.create_manual_match(
         tournament_id, p1_id, p2_id, participant_type
@@ -1256,10 +1268,23 @@ async def process_mm_link(message: Message, state: FSMContext):
     p2_id = data.get("mm_p2_id")
     server_link = message.text.strip()
 
-    await state.clear()
-
     tournament = await db.get_tournament(tournament_id)
     participant_type = "player" if tournament["format"] == "1v1" else "team"
+
+    # Проверяем что оба участника всё ещё ready
+    p1_status = await db.get_participant_status(tournament_id, p1_id, participant_type)
+    p2_status = await db.get_participant_status(tournament_id, p2_id, participant_type)
+
+    if not p1_status or p1_status["status"] != "ready" or not p2_status or p2_status["status"] != "ready":
+        await state.clear()
+        await message.answer(
+            f"{Emoji.CROSS} Один из участников уже не готов. Матч не создан.",
+            reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.clear()
 
     # Создаём матч с ссылкой
     match_id = await db.create_manual_match(

@@ -1640,19 +1640,28 @@ class Database:
     # ==================== СТАТУСЫ УЧАСТНИКОВ (РУЧНАЯ СИСТЕМА) ====================
 
     async def init_participant_statuses(self, tournament_id: int) -> None:
-        """Инициализировать статусы всех участников турнира."""
+        """Инициализировать статусы участников турнира (учитывая check-in)."""
         tournament = await self.get_tournament(tournament_id)
         if not tournament:
             return
 
+        # Учитываем check-in: если включён - берём только прошедших check-in
+        has_checkin = tournament["checkin_hours"] > 0
+
         if tournament["format"] == "1v1":
-            players = await self.get_tournament_players(tournament_id)
+            if has_checkin:
+                players = await self.get_checked_in_players(tournament_id)
+            else:
+                players = await self.get_tournament_players(tournament_id)
             for player in players:
                 await self.set_participant_status(
                     tournament_id, player["id"], "player", "ready"
                 )
         else:
-            teams = await self.get_tournament_teams(tournament_id)
+            if has_checkin:
+                teams = await self.get_checked_in_teams(tournament_id)
+            else:
+                teams = await self.get_tournament_teams(tournament_id)
             for team in teams:
                 await self.set_participant_status(
                     tournament_id, team["id"], "team", "ready"
