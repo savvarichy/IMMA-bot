@@ -1,6 +1,6 @@
 """Обработчики пользователей: регистрация, профиль, рейтинг."""
 from aiogram import Router, F
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command, CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery
@@ -9,7 +9,7 @@ from database import db
 from keyboards import kb, Emoji
 from utils import (
     validate_nickname, validate_steam_link, validate_contact,
-    format_player_info, escape_html
+    format_player_info, format_tournament_info, escape_html
 )
 from config import config
 
@@ -31,6 +31,81 @@ class EditProfileStates(StatesGroup):
 
 
 # ==================== КОМАНДЫ ====================
+
+@router.message(CommandStart(deep_link=True))
+async def cmd_start_deep_link(message: Message, command: CommandObject):
+    """Обработчик /start с deep link (reg_XXX)."""
+    args = command.args
+
+    if not args or not args.startswith("reg_"):
+        # Если не deep link для регистрации - обычный start
+        await cmd_start(message)
+        return
+
+    # Парсим tournament_id
+    try:
+        tournament_id = int(args.replace("reg_", ""))
+    except ValueError:
+        await cmd_start(message)
+        return
+
+    # Проверяем игрока
+    player = await db.get_player(message.from_user.id)
+
+    if not player:
+        # Не зарегистрирован - показываем регистрацию
+        text = (
+            f"{Emoji.TROPHY} <b>IMMA Championship Bot</b>\n\n"
+            f"Для участия в турнирах необходимо сначала зарегистрироваться!"
+        )
+        await message.answer(text, reply_markup=kb.main_menu(False), parse_mode="HTML")
+        return
+
+    if player["is_banned"]:
+        await message.answer(
+            f"{Emoji.LOCK} <b>Вы заблокированы</b>\n\n"
+            f"Причина: {player.get('ban_reason', 'Не указана')}",
+            parse_mode="HTML"
+        )
+        return
+
+    # Получаем турнир
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await message.answer(
+            f"{Emoji.CROSS} Турнир не найден.",
+            reply_markup=kb.main_menu(True),
+            parse_mode="HTML"
+        )
+        return
+
+    # Показываем информацию о турнире с кнопкой регистрации
+    participant_count = await db.get_tournament_participant_count(tournament_id)
+    text = format_tournament_info(tournament, participant_count)
+
+    # Определяем статус регистрации
+    is_registered = False
+    can_register = False
+
+    if tournament["format"] == "1v1":
+        is_registered = await db.is_player_registered(tournament_id, player["id"])
+        can_register = True
+    else:
+        team = await db.get_player_team_by_format(player["id"], tournament["format"])
+        if team:
+            is_registered = await db.is_team_registered(tournament_id, team["id"])
+            can_register = team["captain_id"] == player["id"]
+
+    is_checkin = tournament["status"] == "checkin"
+
+    await message.answer(
+        text,
+        reply_markup=kb.tournament_view(
+            tournament, is_registered, can_register, is_checkin, False
+        ),
+        parse_mode="HTML"
+    )
+
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):

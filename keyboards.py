@@ -458,6 +458,10 @@ class Keyboards:
             callback_data="admin_tournaments"
         )
         builder.button(
+            text=f"{Emoji.SEND} Настройки канала",
+            callback_data="admin_channel"
+        )
+        builder.button(
             text=f"{Emoji.PEOPLE} Игроки",
             callback_data="admin_players"
         )
@@ -481,7 +485,7 @@ class Keyboards:
             text=f"{Emoji.BACK} Главное меню",
             callback_data="main_menu"
         )
-        builder.adjust(2, 2, 2, 2, 1)
+        builder.adjust(2, 2, 2, 2, 2, 1)
         return builder.as_markup()
 
     @staticmethod
@@ -576,6 +580,13 @@ class Keyboards:
             text=f"{Emoji.INBOX} Экспорт списка",
             callback_data=f"admin_t_export_{tournament['id']}"
         )
+
+        # Кнопка публикации в канал
+        if status in ("open", "checkin"):
+            builder.button(
+                text=f"{Emoji.SEND} Опубликовать в канал",
+                callback_data=f"admin_t_publish_{tournament['id']}"
+            )
 
         if status in ("draft", "open"):
             builder.button(
@@ -792,6 +803,35 @@ class Keyboards:
                 )
             ]
         ])
+
+    # ==================== НАСТРОЙКИ КАНАЛА ====================
+
+    @staticmethod
+    def channel_settings(channel: Optional[dict] = None) -> InlineKeyboardMarkup:
+        """Настройки канала."""
+        builder = InlineKeyboardBuilder()
+
+        if channel:
+            builder.button(
+                text=f"{Emoji.CHECK} Проверить права",
+                callback_data="admin_channel_check"
+            )
+            builder.button(
+                text=f"{Emoji.TRASH} Отвязать канал",
+                callback_data="admin_channel_remove"
+            )
+        else:
+            builder.button(
+                text=f"{Emoji.PLUS} Привязать канал",
+                callback_data="admin_channel_add"
+            )
+
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data="admin"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
 
     # ==================== ШАБЛОНЫ ====================
 

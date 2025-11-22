@@ -16,6 +16,15 @@ from config import config
 router = Router()
 
 
+async def _update_channel_post_if_exists(tournament_id: int, bot) -> None:
+    """Обновить пост в канале, если он существует."""
+    post = await db.get_tournament_post(tournament_id)
+    if post:
+        from services.channel import init_channel_service
+        channel_service = init_channel_service(bot)
+        await channel_service.update_post(tournament_id)
+
+
 class CreateTournamentStates(StatesGroup):
     """Состояния создания турнира."""
     waiting_name = State()
@@ -178,6 +187,8 @@ async def callback_tournament_register(callback: CallbackQuery):
         success = await db.register_player_to_tournament(tournament_id, player["id"])
         if success:
             await callback.answer("Вы зарегистрированы на турнир!", show_alert=True)
+            # Обновляем пост в канале
+            await _update_channel_post_if_exists(tournament_id, callback.bot)
         else:
             await callback.answer("Вы уже зарегистрированы!", show_alert=True)
     else:
@@ -212,6 +223,8 @@ async def callback_tournament_register(callback: CallbackQuery):
                 f"Команда {team['name']} зарегистрирована!",
                 show_alert=True
             )
+            # Обновляем пост в канале
+            await _update_channel_post_if_exists(tournament_id, callback.bot)
         else:
             await callback.answer("Команда уже зарегистрирована!", show_alert=True)
 
@@ -239,6 +252,8 @@ async def callback_tournament_unregister(callback: CallbackQuery):
             await db.unregister_team_from_tournament(tournament_id, team["id"])
 
     await callback.answer("Регистрация отменена!", show_alert=True)
+    # Обновляем пост в канале
+    await _update_channel_post_if_exists(tournament_id, callback.bot)
     await callback_tournament_view(callback)
 
 
@@ -1063,3 +1078,203 @@ async def callback_admin_export(callback: CallbackQuery):
         caption=f"Список участников турнира #{tournament_id}"
     )
     await callback.answer()
+
+
+# ==================== НАСТРОЙКИ КАНАЛА ====================
+
+class ChannelStates(StatesGroup):
+    """Состояния настройки канала."""
+    waiting_channel = State()
+
+
+@router.callback_query(F.data == "admin_channel")
+async def callback_admin_channel(callback: CallbackQuery):
+    """Настройки канала."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    channel = await db.get_channel()
+
+    if channel:
+        channel_text = f"@{channel['channel_username']}" if channel.get('channel_username') else f"ID: {channel['channel_id']}"
+        text = (
+            f"<b>{Emoji.SEND} Настройки канала</b>\n\n"
+            f"{Emoji.CHECK} Канал привязан: <b>{channel_text}</b>\n\n"
+            f"Бот будет публиковать посты о турнирах в этот канал."
+        )
+    else:
+        text = (
+            f"<b>{Emoji.SEND} Настройки канала</b>\n\n"
+            f"{Emoji.CROSS} Канал не привязан.\n\n"
+            f"Привяжите канал, чтобы публиковать посты о турнирах."
+        )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.channel_settings(channel),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_channel_add")
+async def callback_admin_channel_add(callback: CallbackQuery, state: FSMContext):
+    """Добавление канала."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.PLUS} Привязка канала</b>\n\n"
+        f"Отправьте @username канала или перешлите сообщение из канала.\n\n"
+        f"<b>Важно:</b> Бот должен быть администратором канала с правами:\n"
+        f"• Публикация сообщений\n"
+        f"• Редактирование сообщений",
+        reply_markup=kb.back_button("admin_channel"),
+        parse_mode="HTML"
+    )
+    await state.set_state(ChannelStates.waiting_channel)
+    await callback.answer()
+
+
+@router.message(ChannelStates.waiting_channel)
+async def process_channel_input(message: Message, state: FSMContext):
+    """Обработка ввода канала."""
+    from services.channel import init_channel_service
+
+    # Инициализируем сервис если нужно
+    channel_service = init_channel_service(message.bot)
+
+    channel_id = None
+    channel_username = None
+
+    # Если переслано сообщение
+    if message.forward_from_chat:
+        channel_id = message.forward_from_chat.id
+        channel_username = message.forward_from_chat.username
+    # Если введён @username
+    elif message.text and message.text.startswith("@"):
+        channel_username = message.text[1:]  # убираем @
+        try:
+            chat = await message.bot.get_chat(f"@{channel_username}")
+            channel_id = chat.id
+        except Exception as e:
+            await message.answer(
+                f"{Emoji.CROSS} Канал не найден. Проверьте username.",
+                reply_markup=kb.back_button("admin_channel"),
+                parse_mode="HTML"
+            )
+            return
+    else:
+        await message.answer(
+            f"{Emoji.CROSS} Отправьте @username канала или перешлите сообщение из канала.",
+            reply_markup=kb.back_button("admin_channel"),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.clear()
+
+    # Проверяем права
+    has_rights, error = await channel_service.check_bot_permissions(channel_id)
+    if not has_rights:
+        await message.answer(
+            f"{Emoji.CROSS} {error}\n\n"
+            f"Добавьте бота как администратора канала.",
+            reply_markup=kb.back_button("admin_channel"),
+            parse_mode="HTML"
+        )
+        return
+
+    # Сохраняем канал
+    await db.set_channel(channel_id, channel_username, message.from_user.id)
+    await db.log_action(message.from_user.id, "channel_set", f"@{channel_username}")
+
+    channel_text = f"@{channel_username}" if channel_username else f"ID: {channel_id}"
+    await message.answer(
+        f"{Emoji.CHECK} Канал <b>{channel_text}</b> успешно привязан!",
+        reply_markup=kb.back_button("admin_channel"),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "admin_channel_check")
+async def callback_admin_channel_check(callback: CallbackQuery):
+    """Проверка прав в канале."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    channel = await db.get_channel()
+    if not channel:
+        await callback.answer("Канал не привязан!", show_alert=True)
+        return
+
+    from services.channel import init_channel_service
+    channel_service = init_channel_service(callback.bot)
+
+    has_rights, error = await channel_service.check_bot_permissions(channel["channel_id"])
+
+    if has_rights:
+        await callback.answer("✅ Все права в порядке!", show_alert=True)
+    else:
+        await callback.answer(f"❌ {error}", show_alert=True)
+
+
+@router.callback_query(F.data == "admin_channel_remove")
+async def callback_admin_channel_remove(callback: CallbackQuery):
+    """Отвязка канала."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await db.remove_channel()
+    await db.log_action(callback.from_user.id, "channel_remove", None)
+
+    await callback.answer("Канал отвязан!", show_alert=True)
+
+    # Обновляем меню
+    await callback.message.edit_text(
+        f"<b>{Emoji.SEND} Настройки канала</b>\n\n"
+        f"{Emoji.CROSS} Канал не привязан.\n\n"
+        f"Привяжите канал, чтобы публиковать посты о турнирах.",
+        reply_markup=kb.channel_settings(None),
+        parse_mode="HTML"
+    )
+
+
+# ==================== ПУБЛИКАЦИЯ В КАНАЛ ====================
+
+@router.callback_query(F.data.regexp(r"^admin_t_publish_(\d+)$"))
+async def callback_admin_publish(callback: CallbackQuery):
+    """Публикация поста о турнире в канал."""
+    tournament_id = int(callback.data.split("_")[3])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    channel = await db.get_channel()
+    if not channel:
+        await callback.answer("Сначала привяжите канал в настройках!", show_alert=True)
+        return
+
+    from services.channel import init_channel_service
+    channel_service = init_channel_service(callback.bot)
+
+    # Проверяем, есть ли уже пост
+    existing_post = await db.get_tournament_post(tournament_id)
+
+    if existing_post:
+        # Обновляем существующий пост
+        success, message = await channel_service.update_post(tournament_id)
+    else:
+        # Публикуем новый пост
+        success, message = await channel_service.publish_post(tournament_id)
+
+    if success:
+        await callback.answer(message, show_alert=True)
+        await db.log_action(callback.from_user.id, "tournament_publish", f"ID: {tournament_id}")
+    else:
+        await callback.answer(f"❌ {message}", show_alert=True)

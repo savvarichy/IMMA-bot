@@ -171,12 +171,33 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- Настройки канала
+            CREATE TABLE IF NOT EXISTS channel_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id INTEGER UNIQUE NOT NULL,
+                channel_username TEXT,
+                added_by INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Посты турниров в каналах
+            CREATE TABLE IF NOT EXISTS tournament_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tournament_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+                UNIQUE(tournament_id, channel_id)
+            );
+
             -- Индексы
             CREATE INDEX IF NOT EXISTS idx_players_telegram ON players(telegram_id);
             CREATE INDEX IF NOT EXISTS idx_teams_captain ON teams(captain_id);
             CREATE INDEX IF NOT EXISTS idx_teams_invite ON teams(invite_code);
             CREATE INDEX IF NOT EXISTS idx_tournaments_status ON tournaments(status);
             CREATE INDEX IF NOT EXISTS idx_matches_tournament ON matches(tournament_id);
+            CREATE INDEX IF NOT EXISTS idx_tournament_posts ON tournament_posts(tournament_id);
         """)
         await self.conn.commit()
 
@@ -914,6 +935,73 @@ class Database:
         async with self.conn.execute(
             "SELECT * FROM action_logs ORDER BY created_at DESC LIMIT ?",
             (limit,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    # ==================== КАНАЛЫ ====================
+
+    async def get_channel(self) -> Optional[dict]:
+        """Получить привязанный канал."""
+        async with self.conn.execute(
+            "SELECT * FROM channel_settings LIMIT 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def set_channel(
+        self, channel_id: int, channel_username: Optional[str], added_by: int
+    ) -> None:
+        """Установить канал для публикаций."""
+        # Удаляем старый канал если есть
+        await self.conn.execute("DELETE FROM channel_settings")
+        await self.conn.execute(
+            """INSERT INTO channel_settings (channel_id, channel_username, added_by)
+               VALUES (?, ?, ?)""",
+            (channel_id, channel_username, added_by)
+        )
+        await self.conn.commit()
+
+    async def remove_channel(self) -> None:
+        """Удалить привязку канала."""
+        await self.conn.execute("DELETE FROM channel_settings")
+        await self.conn.commit()
+
+    # ==================== ПОСТЫ ТУРНИРОВ ====================
+
+    async def get_tournament_post(self, tournament_id: int) -> Optional[dict]:
+        """Получить пост турнира в канале."""
+        async with self.conn.execute(
+            "SELECT * FROM tournament_posts WHERE tournament_id = ?",
+            (tournament_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def save_tournament_post(
+        self, tournament_id: int, channel_id: int, message_id: int
+    ) -> None:
+        """Сохранить информацию о посте турнира."""
+        await self.conn.execute(
+            """INSERT OR REPLACE INTO tournament_posts
+               (tournament_id, channel_id, message_id, published_at)
+               VALUES (?, ?, ?, ?)""",
+            (tournament_id, channel_id, message_id, datetime.now())
+        )
+        await self.conn.commit()
+
+    async def delete_tournament_post(self, tournament_id: int) -> None:
+        """Удалить запись о посте турнира."""
+        await self.conn.execute(
+            "DELETE FROM tournament_posts WHERE tournament_id = ?",
+            (tournament_id,)
+        )
+        await self.conn.commit()
+
+    async def get_all_tournament_posts(self) -> list[dict]:
+        """Получить все посты турниров."""
+        async with self.conn.execute(
+            "SELECT * FROM tournament_posts"
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
