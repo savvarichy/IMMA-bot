@@ -102,7 +102,7 @@ def format_tournament_info(tournament: dict, participant_count: int) -> str:
     """Форматирование информации о турнире."""
     status_text = config.TOURNAMENT_STATUSES.get(tournament["status"], tournament["status"])
     format_text = config.TOURNAMENT_FORMATS.get(tournament["format"], {}).get("name", tournament["format"])
-    prize_text = format_prize(tournament["prize_type"], tournament["prize_amount"])
+    prize_text = format_prizes(tournament)
     maps_text = ", ".join(m.replace("de_", "") for m in tournament["maps"])
 
     progress = Emoji.progress_bar(participant_count, tournament["max_participants"])
@@ -115,7 +115,8 @@ def format_tournament_info(tournament: dict, participant_count: int) -> str:
 {Emoji.MAP} <b>Карты:</b> {maps_text}
 {Emoji.PEOPLE} <b>Участники:</b> {participant_count}/{tournament['max_participants']}
 {progress}
-{Emoji.GIFT} <b>Приз:</b> {prize_text}
+{Emoji.GIFT} <b>Призы:</b>
+{prize_text}
 {Emoji.CALENDAR} <b>Старт:</b> {format_datetime(tournament['start_time'])}
 """
 
@@ -125,8 +126,29 @@ def format_tournament_info(tournament: dict, participant_count: int) -> str:
     return text.strip()
 
 
-def format_prize(prize_type: str, amount: int) -> str:
-    """Форматирование приза."""
+def format_prizes(tournament: dict) -> str:
+    """Форматирование призов турнира."""
+    prizes = tournament.get("prizes")
+    prize_type = tournament.get("prize_type", "none")
+
+    if prize_type == "none" or not prizes:
+        # Старый формат с prize_amount
+        amount = tournament.get("prize_amount", 0)
+        if amount > 0:
+            return format_prize_old(prize_type, amount)
+        return "Без приза"
+
+    # Новый формат с отдельными призами по местам
+    lines = []
+    for place, prize in sorted(prizes.items(), key=lambda x: int(x[0])):
+        emoji = config.PRIZE_PLACES.get(int(place), f"{place}.")
+        lines.append(f"{emoji} {prize}")
+
+    return "\n".join(lines) if lines else "Без приза"
+
+
+def format_prize_old(prize_type: str, amount: int) -> str:
+    """Форматирование приза (старый формат)."""
     if prize_type == "none" or amount == 0:
         return "Без приза"
 

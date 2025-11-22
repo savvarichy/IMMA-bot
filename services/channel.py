@@ -6,7 +6,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from database import db
 from keyboards import Emoji
-from utils import format_datetime, format_prize, get_time_until
+from utils import format_datetime, format_prizes, get_time_until
 from config import config
 
 
@@ -60,7 +60,7 @@ class ChannelService:
         maps_list = tournament.get("maps", [])
         maps_text = ", ".join(m.replace("de_", "").capitalize() for m in maps_list)
 
-        prize_text = format_prize(tournament["prize_type"], tournament["prize_amount"])
+        prize_text = format_prizes(tournament)
         progress = Emoji.progress_bar(participant_count, tournament["max_participants"])
 
         # Время до начала
@@ -76,7 +76,9 @@ class ChannelService:
 👥 Участники: <b>{participant_count}/{tournament['max_participants']}</b>
 {progress}
 
-🎁 Приз: <b>{prize_text}</b>
+🎁 Призы:
+{prize_text}
+
 📅 {format_datetime(tournament['start_time'])}
 ⏰ До начала: <b>{time_until}</b>"""
 

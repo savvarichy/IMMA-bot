@@ -33,11 +33,25 @@ class CreateTournamentStates(StatesGroup):
     waiting_participants = State()
     waiting_custom_participants = State()
     waiting_prize_type = State()
-    waiting_prize_amount = State()
+    waiting_prize_places = State()
+    waiting_prize_1 = State()
+    waiting_prize_2 = State()
+    waiting_prize_3 = State()
     waiting_date = State()
     waiting_time = State()
     waiting_checkin = State()
     confirm = State()
+
+
+class EditTournamentStates(StatesGroup):
+    """Состояния редактирования турнира."""
+    waiting_name = State()
+    waiting_date = State()
+    waiting_time = State()
+    waiting_participants = State()
+    waiting_prize_1 = State()
+    waiting_prize_2 = State()
+    waiting_prize_3 = State()
 
 
 class BroadcastStates(StatesGroup):
@@ -717,10 +731,14 @@ async def process_custom_participants(message: Message, state: FSMContext):
 async def process_prize_type(callback: CallbackQuery, state: FSMContext):
     """Выбор типа приза."""
     prize_type = callback.data.replace("t_prize_", "")
-    await state.update_data(prize_type=prize_type)
+
+    # Проверяем что это не выбор количества мест
+    if prize_type.startswith("places_"):
+        return
+
+    await state.update_data(prize_type=prize_type, prize_amount=0, prizes={})
 
     if prize_type == "none":
-        await state.update_data(prize_amount=0)
         # Переходим к выбору даты
         now = datetime.now()
         await callback.message.edit_text(
@@ -731,35 +749,121 @@ async def process_prize_type(callback: CallbackQuery, state: FSMContext):
         )
         await state.set_state(CreateTournamentStates.waiting_date)
     else:
+        # Выбор количества призовых мест
         prize_name = config.PRIZE_TYPES[prize_type]
         await callback.message.edit_text(
             f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
             f"Тип приза: <b>{prize_name}</b>\n\n"
-            f"Введите сумму приза:",
-            reply_markup=kb.back_button("admin_create_tournament"),
+            f"Сколько призовых мест?",
+            reply_markup=kb.prize_places_select(),
             parse_mode="HTML"
         )
-        await state.set_state(CreateTournamentStates.waiting_prize_amount)
+        await state.set_state(CreateTournamentStates.waiting_prize_places)
     await callback.answer()
 
 
-@router.message(CreateTournamentStates.waiting_prize_amount)
-async def process_prize_amount(message: Message, state: FSMContext):
-    """Ввод суммы приза."""
-    try:
-        amount = int(message.text.strip().replace(" ", ""))
-        if amount <= 0:
-            raise ValueError()
-    except ValueError:
+@router.callback_query(F.data.startswith("t_prize_places_"), CreateTournamentStates.waiting_prize_places)
+async def process_prize_places(callback: CallbackQuery, state: FSMContext):
+    """Выбор количества призовых мест."""
+    places = int(callback.data.replace("t_prize_places_", ""))
+    data = await state.get_data()
+    prize_type = data.get("prize_type")
+
+    await state.update_data(prize_places=places)
+
+    # Определяем название единицы измерения
+    unit_hint = ""
+    if prize_type == "stars":
+        unit_hint = " (например: 50)"
+    elif prize_type == "rub":
+        unit_hint = " (например: 500)"
+    elif prize_type == "skins":
+        unit_hint = " (например: AWP Asiimov)"
+    elif prize_type == "custom":
+        unit_hint = " (например: Premium подписка)"
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
+        f"🥇 <b>Приз за 1 место:</b>\n"
+        f"Введите приз{unit_hint}:",
+        reply_markup=kb.back_button("admin_create_tournament"),
+        parse_mode="HTML"
+    )
+    await state.set_state(CreateTournamentStates.waiting_prize_1)
+    await callback.answer()
+
+
+@router.message(CreateTournamentStates.waiting_prize_1)
+async def process_prize_1(message: Message, state: FSMContext):
+    """Ввод приза за 1 место."""
+    data = await state.get_data()
+    prizes = data.get("prizes", {})
+    prizes["1"] = message.text.strip()
+    await state.update_data(prizes=prizes)
+
+    places = data.get("prize_places", 1)
+
+    if places >= 2:
         await message.answer(
-            f"{Emoji.CROSS} Введите положительное число.",
+            f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
+            f"🥈 <b>Приз за 2 место:</b>\n"
+            f"Введите приз:",
             reply_markup=kb.back_button("admin_create_tournament"),
             parse_mode="HTML"
         )
-        return
+        await state.set_state(CreateTournamentStates.waiting_prize_2)
+    else:
+        # Переходим к выбору даты
+        now = datetime.now()
+        await message.answer(
+            f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
+            f"<b>Шаг 6:</b> Выберите дату старта:",
+            reply_markup=kb.calendar(now.year, now.month),
+            parse_mode="HTML"
+        )
+        await state.set_state(CreateTournamentStates.waiting_date)
 
-    await state.update_data(prize_amount=amount)
 
+@router.message(CreateTournamentStates.waiting_prize_2)
+async def process_prize_2(message: Message, state: FSMContext):
+    """Ввод приза за 2 место."""
+    data = await state.get_data()
+    prizes = data.get("prizes", {})
+    prizes["2"] = message.text.strip()
+    await state.update_data(prizes=prizes)
+
+    places = data.get("prize_places", 2)
+
+    if places >= 3:
+        await message.answer(
+            f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
+            f"🥉 <b>Приз за 3 место:</b>\n"
+            f"Введите приз:",
+            reply_markup=kb.back_button("admin_create_tournament"),
+            parse_mode="HTML"
+        )
+        await state.set_state(CreateTournamentStates.waiting_prize_3)
+    else:
+        # Переходим к выбору даты
+        now = datetime.now()
+        await message.answer(
+            f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
+            f"<b>Шаг 6:</b> Выберите дату старта:",
+            reply_markup=kb.calendar(now.year, now.month),
+            parse_mode="HTML"
+        )
+        await state.set_state(CreateTournamentStates.waiting_date)
+
+
+@router.message(CreateTournamentStates.waiting_prize_3)
+async def process_prize_3(message: Message, state: FSMContext):
+    """Ввод приза за 3 место."""
+    data = await state.get_data()
+    prizes = data.get("prizes", {})
+    prizes["3"] = message.text.strip()
+    await state.update_data(prizes=prizes)
+
+    # Переходим к выбору даты
     now = datetime.now()
     await message.answer(
         f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
@@ -851,9 +955,16 @@ async def process_checkin_select(callback: CallbackQuery, state: FSMContext):
 
     format_name = config.TOURNAMENT_FORMATS[data["format"]]["name"]
     maps_text = ", ".join(m.replace("de_", "") for m in data["maps"])
+
+    # Формируем текст призов
     prize_text = "Без приза"
-    if data["prize_type"] != "none":
-        prize_text = f"{data['prize_amount']} ({config.PRIZE_TYPES[data['prize_type']]})"
+    prizes = data.get("prizes", {})
+    if data["prize_type"] != "none" and prizes:
+        prize_lines = []
+        for place, prize in sorted(prizes.items(), key=lambda x: int(x[0])):
+            emoji = config.PRIZE_PLACES.get(int(place), f"{place}.")
+            prize_lines.append(f"{emoji} {prize}")
+        prize_text = "\n".join(prize_lines)
 
     checkin_text = "Без check-in" if checkin_hours == 0 else f"За {checkin_hours} ч."
 
@@ -863,7 +974,7 @@ async def process_checkin_select(callback: CallbackQuery, state: FSMContext):
         f"{Emoji.GAME} <b>Формат:</b> {format_name}\n"
         f"{Emoji.MAP} <b>Карты:</b> {maps_text}\n"
         f"{Emoji.PEOPLE} <b>Участников:</b> {data['max_participants']}\n"
-        f"{Emoji.GIFT} <b>Приз:</b> {prize_text}\n"
+        f"{Emoji.GIFT} <b>Призы:</b>\n{prize_text}\n"
         f"{Emoji.CALENDAR} <b>Старт:</b> {format_datetime(data['start_time'])}\n"
         f"{Emoji.BELL} <b>Check-in:</b> {checkin_text}\n"
     )
@@ -894,21 +1005,24 @@ async def process_tournament_confirm(callback: CallbackQuery, state: FSMContext)
         maps=data["maps"],
         max_participants=data["max_participants"],
         prize_type=data["prize_type"],
-        prize_amount=data["prize_amount"],
+        prize_amount=data.get("prize_amount", 0),
         start_time=data["start_time"],
         registration_deadline=registration_deadline,
         checkin_hours=data["checkin_hours"],
-        created_by=player["id"] if player else callback.from_user.id
+        created_by=player["id"] if player else callback.from_user.id,
+        prizes=data.get("prizes")
     )
 
     await db.log_action(callback.from_user.id, "tournament_create", f"ID: {tournament_id}")
 
+    tournament = await db.get_tournament(tournament_id)
+    participant_count = 0
+    text = format_tournament_info(tournament, participant_count)
+    text = f"{Emoji.CHECK} <b>Турнир создан!</b>\n\n" + text
+
     await callback.message.edit_text(
-        f"{Emoji.CHECK} <b>Турнир создан!</b>\n\n"
-        f"ID: {tournament_id}\n"
-        f"Статус: Черновик\n\n"
-        f"Откройте регистрацию, когда будете готовы.",
-        reply_markup=kb.back_button("admin"),
+        text,
+        reply_markup=kb.tournament_created_menu(tournament_id),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -1278,3 +1392,223 @@ async def callback_admin_publish(callback: CallbackQuery):
         await db.log_action(callback.from_user.id, "tournament_publish", f"ID: {tournament_id}")
     else:
         await callback.answer(f"❌ {message}", show_alert=True)
+
+
+# ==================== ДУБЛИРОВАНИЕ ТУРНИРА ====================
+
+@router.callback_query(F.data.regexp(r"^admin_t_duplicate_(\d+)$"))
+async def callback_admin_duplicate(callback: CallbackQuery, state: FSMContext):
+    """Дублирование турнира."""
+    tournament_id = int(callback.data.split("_")[3])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
+    # Заполняем данные из турнира
+    await state.update_data(
+        name=f"{tournament['name']} (копия)",
+        format=tournament["format"],
+        maps=tournament["maps"],
+        max_participants=tournament["max_participants"],
+        prize_type=tournament["prize_type"],
+        prize_amount=tournament.get("prize_amount", 0),
+        prizes=tournament.get("prizes", {}),
+        checkin_hours=tournament["checkin_hours"]
+    )
+
+    # Показываем календарь для выбора даты
+    now = datetime.now()
+    await callback.message.edit_text(
+        f"<b>{Emoji.REFRESH} Дублирование турнира</b>\n\n"
+        f"Турнир: <b>{escape_html(tournament['name'])}</b>\n\n"
+        f"Выберите новую дату старта:",
+        reply_markup=kb.calendar(now.year, now.month),
+        parse_mode="HTML"
+    )
+    await state.set_state(CreateTournamentStates.waiting_date)
+    await callback.answer()
+
+
+# ==================== УДАЛЕНИЕ ТУРНИРА ====================
+
+@router.callback_query(F.data.regexp(r"^admin_t_delete_(\d+)$"))
+async def callback_admin_delete(callback: CallbackQuery):
+    """Удаление турнира (подтверждение)."""
+    tournament_id = int(callback.data.split("_")[3])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.WARNING} Удаление турнира</b>\n\n"
+        f"Вы уверены, что хотите удалить турнир\n"
+        f"<b>{escape_html(tournament['name'])}</b>?\n\n"
+        f"Это действие нельзя отменить!",
+        reply_markup=kb.confirm_cancel(
+            f"admin_t_dodelete_{tournament_id}",
+            f"admin_t_manage_{tournament_id}"
+        ),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^admin_t_dodelete_(\d+)$"))
+async def callback_admin_dodelete(callback: CallbackQuery):
+    """Подтверждение удаления турнира."""
+    tournament_id = int(callback.data.split("_")[3])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    # Удаляем пост из канала если есть
+    post = await db.get_tournament_post(tournament_id)
+    if post:
+        from services.channel import init_channel_service
+        channel_service = init_channel_service(callback.bot)
+        await channel_service.delete_post(tournament_id)
+
+    # Удаляем турнир (каскадно удалятся регистрации и матчи)
+    await db.conn.execute("DELETE FROM tournaments WHERE id = ?", (tournament_id,))
+    await db.conn.commit()
+    await db.log_action(callback.from_user.id, "tournament_delete", f"ID: {tournament_id}")
+
+    await callback.answer("Турнир удалён!", show_alert=True)
+    await callback.message.edit_text(
+        f"{Emoji.CHECK} Турнир удалён.",
+        reply_markup=kb.back_button("admin_tournaments"),
+        parse_mode="HTML"
+    )
+
+
+# ==================== РЕДАКТИРОВАНИЕ ТУРНИРА ====================
+
+@router.callback_query(F.data.regexp(r"^admin_t_edit_(\d+)$"))
+async def callback_admin_edit(callback: CallbackQuery):
+    """Меню редактирования турнира."""
+    tournament_id = int(callback.data.split("_")[3])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.PENCIL} Редактирование турнира</b>\n\n"
+        f"Турнир: <b>{escape_html(tournament['name'])}</b>\n\n"
+        f"Выберите что изменить:",
+        reply_markup=kb.tournament_edit_menu(tournament_id),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^admin_t_edit_name_(\d+)$"))
+async def callback_admin_edit_name(callback: CallbackQuery, state: FSMContext):
+    """Редактирование названия турнира."""
+    tournament_id = int(callback.data.split("_")[4])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.update_data(edit_tournament_id=tournament_id)
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.PENCIL} Изменение названия</b>\n\n"
+        f"Введите новое название турнира:",
+        reply_markup=kb.back_button(f"admin_t_edit_{tournament_id}"),
+        parse_mode="HTML"
+    )
+    await state.set_state(EditTournamentStates.waiting_name)
+    await callback.answer()
+
+
+@router.message(EditTournamentStates.waiting_name)
+async def process_edit_name(message: Message, state: FSMContext):
+    """Обработка изменения названия."""
+    data = await state.get_data()
+    tournament_id = data.get("edit_tournament_id")
+    await state.clear()
+
+    name = message.text.strip()
+    if len(name) < 3 or len(name) > 64:
+        await message.answer(
+            f"{Emoji.CROSS} Название должно быть от 3 до 64 символов.",
+            reply_markup=kb.back_button(f"admin_t_edit_{tournament_id}"),
+            parse_mode="HTML"
+        )
+        return
+
+    await db.update_tournament(tournament_id, name=name)
+    await db.log_action(message.from_user.id, "tournament_edit_name", f"ID: {tournament_id}")
+
+    await message.answer(
+        f"{Emoji.CHECK} Название изменено на <b>{escape_html(name)}</b>!",
+        reply_markup=kb.back_button(f"admin_t_manage_{tournament_id}"),
+        parse_mode="HTML"
+    )
+
+
+# ==================== СТАТИСТИКА ====================
+
+@router.callback_query(F.data == "admin_stats")
+async def callback_admin_stats(callback: CallbackQuery):
+    """Статистика в админке."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    stats = await db.get_stats()
+
+    text = (
+        f"<b>{Emoji.CHART} Статистика</b>\n\n"
+        f"{Emoji.PEOPLE} <b>Игроков:</b> {stats['total_players']}\n"
+        f"{Emoji.TROPHY} <b>Команд:</b> {stats['total_teams']}\n\n"
+        f"<b>Турниры:</b>\n"
+        f"• Всего: {stats['total_tournaments']}\n"
+        f"• Активных: {stats['active_tournaments']}\n"
+        f"• Завершённых: {stats['finished_tournaments']}\n"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.back_button("admin"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+# ==================== В ЧЕРНОВИК ====================
+
+@router.callback_query(F.data.regexp(r"^admin_t_to_draft_(\d+)$"))
+async def callback_admin_to_draft(callback: CallbackQuery):
+    """Поместить турнир в черновик."""
+    tournament_id = int(callback.data.split("_")[4])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await db.update_tournament_status(tournament_id, "draft")
+    await callback.answer("Турнир помещён в черновик!", show_alert=True)
+
+    callback.data = f"admin_t_manage_{tournament_id}"
+    await callback_admin_tournament_manage(callback)

@@ -85,6 +85,7 @@ class Database:
                 max_participants INTEGER NOT NULL,
                 prize_type TEXT NOT NULL,
                 prize_amount INTEGER DEFAULT 0,
+                prizes TEXT,
                 start_time TIMESTAMP NOT NULL,
                 registration_deadline TIMESTAMP NOT NULL,
                 checkin_hours INTEGER DEFAULT 0,
@@ -469,16 +470,18 @@ class Database:
         start_time: datetime,
         registration_deadline: datetime,
         checkin_hours: int,
-        created_by: int
+        created_by: int,
+        prizes: Optional[dict] = None
     ) -> int:
         """Создать турнир."""
+        prizes_json = json.dumps(prizes) if prizes else None
         async with self.conn.execute(
             """INSERT INTO tournaments
                (name, format, maps, max_participants, prize_type, prize_amount,
-                start_time, registration_deadline, checkin_hours, created_by, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')""",
+                prizes, start_time, registration_deadline, checkin_hours, created_by, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')""",
             (name, format, json.dumps(maps), max_participants, prize_type,
-             prize_amount, start_time, registration_deadline, checkin_hours, created_by)
+             prize_amount, prizes_json, start_time, registration_deadline, checkin_hours, created_by)
         ) as cursor:
             await self.conn.commit()
             return cursor.lastrowid
@@ -492,6 +495,8 @@ class Database:
             if row:
                 data = dict(row)
                 data["maps"] = json.loads(data["maps"])
+                if data.get("prizes"):
+                    data["prizes"] = json.loads(data["prizes"])
                 return data
             return None
 
@@ -506,6 +511,8 @@ class Database:
             for r in rows:
                 data = dict(r)
                 data["maps"] = json.loads(data["maps"])
+                if data.get("prizes"):
+                    data["prizes"] = json.loads(data["prizes"])
                 result.append(data)
             return result
 
@@ -521,6 +528,8 @@ class Database:
             for r in rows:
                 data = dict(r)
                 data["maps"] = json.loads(data["maps"])
+                if data.get("prizes"):
+                    data["prizes"] = json.loads(data["prizes"])
                 result.append(data)
             return result
 
@@ -534,6 +543,8 @@ class Database:
             for r in rows:
                 data = dict(r)
                 data["maps"] = json.loads(data["maps"])
+                if data.get("prizes"):
+                    data["prizes"] = json.loads(data["prizes"])
                 result.append(data)
             return result
 
@@ -543,6 +554,8 @@ class Database:
             return
         if "maps" in kwargs:
             kwargs["maps"] = json.dumps(kwargs["maps"])
+        if "prizes" in kwargs and kwargs["prizes"] is not None:
+            kwargs["prizes"] = json.dumps(kwargs["prizes"])
         fields = ", ".join(f"{k} = ?" for k in kwargs.keys())
         values = list(kwargs.values()) + [tournament_id]
         await self.conn.execute(
@@ -919,6 +932,47 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    # ==================== СТАТИСТИКА ====================
+
+    async def get_stats(self) -> dict:
+        """Получить общую статистику."""
+        stats = {}
+
+        # Количество игроков
+        async with self.conn.execute("SELECT COUNT(*) as cnt FROM players") as cursor:
+            row = await cursor.fetchone()
+            stats["total_players"] = row["cnt"] if row else 0
+
+        # Количество команд
+        async with self.conn.execute("SELECT COUNT(*) as cnt FROM teams") as cursor:
+            row = await cursor.fetchone()
+            stats["total_teams"] = row["cnt"] if row else 0
+
+        # Турниры по статусам
+        async with self.conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM tournaments GROUP BY status"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            stats["tournaments_by_status"] = {r["status"]: r["cnt"] for r in rows}
+
+        # Общее количество турниров
+        async with self.conn.execute("SELECT COUNT(*) as cnt FROM tournaments") as cursor:
+            row = await cursor.fetchone()
+            stats["total_tournaments"] = row["cnt"] if row else 0
+
+        # Завершённых турниров
+        stats["finished_tournaments"] = stats["tournaments_by_status"].get("finished", 0)
+
+        # Активных турниров
+        active_count = (
+            stats["tournaments_by_status"].get("open", 0) +
+            stats["tournaments_by_status"].get("checkin", 0) +
+            stats["tournaments_by_status"].get("active", 0)
+        )
+        stats["active_tournaments"] = active_count
+
+        return stats
 
     # ==================== ЛОГИ ====================
 

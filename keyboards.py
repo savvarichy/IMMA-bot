@@ -522,19 +522,15 @@ class Keyboards:
 
         if status == "draft":
             builder.button(
-                text=f"{Emoji.PENCIL} Редактировать",
-                callback_data=f"admin_t_edit_{tournament['id']}"
-            )
-            builder.button(
                 text=f"{Emoji.UNLOCK} Открыть регистрацию",
                 callback_data=f"admin_t_open_{tournament['id']}"
             )
+            builder.button(
+                text=f"{Emoji.PENCIL} Редактировать",
+                callback_data=f"admin_t_edit_{tournament['id']}"
+            )
 
         elif status == "open":
-            builder.button(
-                text=f"{Emoji.LOCK} Закрыть регистрацию",
-                callback_data=f"admin_t_close_{tournament['id']}"
-            )
             if tournament["checkin_hours"] > 0:
                 builder.button(
                     text=f"{Emoji.BELL} Запустить check-in",
@@ -545,6 +541,10 @@ class Keyboards:
                     text=f"{Emoji.PLAY} Начать турнир",
                     callback_data=f"admin_t_start_{tournament['id']}"
                 )
+            builder.button(
+                text=f"{Emoji.LOCK} В черновик",
+                callback_data=f"admin_t_close_{tournament['id']}"
+            )
 
         elif status == "checkin":
             builder.button(
@@ -562,31 +562,34 @@ class Keyboards:
                 callback_data=f"admin_t_result_{tournament['id']}"
             )
 
-        if status not in ("finished", "cancelled"):
+        # Кнопка публикации в канал
+        if status in ("draft", "open", "checkin"):
             builder.button(
-                text=f"{Emoji.CROSS} Отменить турнир",
-                callback_data=f"admin_t_cancel_{tournament['id']}"
+                text=f"{Emoji.SEND} Опубликовать в канал",
+                callback_data=f"admin_t_publish_{tournament['id']}"
             )
 
         builder.button(
             text=f"{Emoji.LIST} Участники",
             callback_data=f"admin_t_participants_{tournament['id']}"
         )
-        builder.button(
-            text=f"{Emoji.SEND} Рассылка",
-            callback_data=f"admin_t_broadcast_{tournament['id']}"
-        )
+
+        if status not in ("finished", "cancelled"):
+            builder.button(
+                text=f"{Emoji.SEND} Рассылка",
+                callback_data=f"admin_t_broadcast_{tournament['id']}"
+            )
+
         builder.button(
             text=f"{Emoji.INBOX} Экспорт списка",
             callback_data=f"admin_t_export_{tournament['id']}"
         )
 
-        # Кнопка публикации в канал
-        if status in ("open", "checkin"):
-            builder.button(
-                text=f"{Emoji.SEND} Опубликовать в канал",
-                callback_data=f"admin_t_publish_{tournament['id']}"
-            )
+        # Дублировать турнир
+        builder.button(
+            text=f"{Emoji.REFRESH} Дублировать",
+            callback_data=f"admin_t_duplicate_{tournament['id']}"
+        )
 
         if status in ("draft", "open"):
             builder.button(
@@ -594,9 +597,21 @@ class Keyboards:
                 callback_data=f"admin_t_save_template_{tournament['id']}"
             )
 
+        if status not in ("finished", "cancelled"):
+            builder.button(
+                text=f"{Emoji.CROSS} Отменить турнир",
+                callback_data=f"admin_t_cancel_{tournament['id']}"
+            )
+
+        if status == "draft":
+            builder.button(
+                text=f"{Emoji.TRASH} Удалить",
+                callback_data=f"admin_t_delete_{tournament['id']}"
+            )
+
         builder.button(
-            text=f"{Emoji.BACK} Назад",
-            callback_data=f"admin_tournaments_{status}"
+            text=f"{Emoji.BACK} К турнирам",
+            callback_data="admin_tournaments"
         )
         builder.adjust(2)
         return builder.as_markup()
@@ -674,7 +689,21 @@ class Keyboards:
             text=f"{Emoji.BACK} Назад",
             callback_data="admin_create_tournament"
         )
-        builder.adjust(2, 2, 1)
+        builder.adjust(2, 2, 1, 1)
+        return builder.as_markup()
+
+    @staticmethod
+    def prize_places_select() -> InlineKeyboardMarkup:
+        """Выбор количества призовых мест."""
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🥇 Только 1 место", callback_data="t_prize_places_1")
+        builder.button(text="🥇🥈 2 места", callback_data="t_prize_places_2")
+        builder.button(text="🥇🥈🥉 3 места", callback_data="t_prize_places_3")
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data="admin_create_tournament"
+        )
+        builder.adjust(1)
         return builder.as_markup()
 
     @staticmethod
@@ -803,6 +832,68 @@ class Keyboards:
                 )
             ]
         ])
+
+    @staticmethod
+    def tournament_created_menu(tournament_id: int) -> InlineKeyboardMarkup:
+        """Меню после создания турнира."""
+        builder = InlineKeyboardBuilder()
+        builder.button(
+            text=f"{Emoji.UNLOCK} Открыть регистрацию",
+            callback_data=f"admin_t_open_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.PENCIL} Редактировать",
+            callback_data=f"admin_t_edit_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.SEND} Опубликовать в канал",
+            callback_data=f"admin_t_publish_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.LIST} В черновик",
+            callback_data=f"admin_t_to_draft_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.TRASH} Удалить",
+            callback_data=f"admin_t_delete_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.BACK} К турнирам",
+            callback_data="admin_tournaments"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def tournament_edit_menu(tournament_id: int) -> InlineKeyboardMarkup:
+        """Меню редактирования турнира."""
+        builder = InlineKeyboardBuilder()
+        builder.button(
+            text=f"{Emoji.PENCIL} Название",
+            callback_data=f"admin_t_edit_name_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.CALENDAR} Дата и время",
+            callback_data=f"admin_t_edit_date_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.MAP} Карты",
+            callback_data=f"admin_t_edit_maps_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.PEOPLE} Макс. участников",
+            callback_data=f"admin_t_edit_participants_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.GIFT} Призы",
+            callback_data=f"admin_t_edit_prizes_{tournament_id}"
+        )
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=f"admin_t_manage_{tournament_id}"
+        )
+        builder.adjust(2, 2, 1, 1)
+        return builder.as_markup()
 
     # ==================== НАСТРОЙКИ КАНАЛА ====================
 
