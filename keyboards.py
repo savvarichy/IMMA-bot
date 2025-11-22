@@ -611,14 +611,6 @@ class Keyboards:
                 callback_data=f"mm_control_{tournament['id']}"
             )
             builder.button(
-                text=f"{Emoji.PEOPLE} Лобби",
-                callback_data=f"admin_t_lobby_{tournament['id']}"
-            )
-            builder.button(
-                text=f"{Emoji.TARGET} Все матчи",
-                callback_data=f"admin_t_matches_{tournament['id']}"
-            )
-            builder.button(
                 text=f"{Emoji.TROPHY} Завершить турнир",
                 callback_data=f"admin_t_finish_{tournament['id']}"
             )
@@ -1361,28 +1353,41 @@ class Keyboards:
         builder = InlineKeyboardBuilder()
 
         builder.button(
-            text=f"➕ Создать матч",
+            text=f"➕ Создать матч ({ready_count} готовых)",
             callback_data=f"mm_create_{tournament_id}"
         )
+
+        if active_matches > 0:
+            builder.button(
+                text=f"🔴 Активные ({active_matches})",
+                callback_data=f"mm_active_{tournament_id}"
+            )
+
         builder.button(
-            text=f"🔴 Активные матчи ({active_matches})",
-            callback_data=f"mm_active_{tournament_id}"
-        )
-        builder.button(
-            text=f"📝 Ввести результат",
-            callback_data=f"admin_t_result_{tournament_id}"
-        )
-        builder.button(
-            text=f"👥 Участники ({ready_count}🟢 {in_match_count}🔴 {eliminated_count}❌)",
+            text=f"👥 Участники ({ready_count + in_match_count + eliminated_count})",
             callback_data=f"mm_participants_{tournament_id}"
-        )
-        builder.button(
-            text=f"🔄 Вернуть игрока",
-            callback_data=f"mm_restore_{tournament_id}"
         )
         builder.button(
             text=f"{Emoji.BACK} Назад",
             callback_data=f"admin_t_manage_{tournament_id}"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def participants_menu(tournament_id: int, has_eliminated: bool) -> InlineKeyboardMarkup:
+        """Меню участников с опцией восстановления."""
+        builder = InlineKeyboardBuilder()
+
+        if has_eliminated:
+            builder.button(
+                text=f"🔄 Вернуть игрока",
+                callback_data=f"mm_restore_{tournament_id}"
+            )
+
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=f"mm_control_{tournament_id}"
         )
         builder.adjust(1)
         return builder.as_markup()

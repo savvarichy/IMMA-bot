@@ -1148,15 +1148,17 @@ async def callback_mm_participants(callback: CallbackQuery):
     participants = await _get_participants_with_names(tournament_id)
 
     status_icons = {"ready": "🟢", "in_match": "🔴", "eliminated": "❌"}
+    has_eliminated = any(p["status"] == "eliminated" for p in participants)
 
     text = f"<b>👥 Участники турнира</b>\n\n"
     for p in participants:
         icon = status_icons.get(p["status"], "")
-        text += f"{icon} {p['name']} - {p['wins']}W\n"
+        losses = p.get("losses", 0)
+        text += f"{icon} {p['name']} ({p['wins']}W/{losses}L)\n"
 
     await callback.message.edit_text(
         text,
-        reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+        reply_markup=kb.participants_menu(tournament_id, has_eliminated),
         parse_mode="HTML"
     )
     await callback.answer()
