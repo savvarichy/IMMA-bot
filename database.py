@@ -315,20 +315,21 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
-    async def get_all_players(self, search: Optional[str] = None) -> list[dict]:
+    async def get_all_players(self, search: Optional[str] = None, limit: int = 50) -> list[dict]:
         """Получить всех игроков."""
         if search:
             async with self.conn.execute(
                 """SELECT * FROM players
                    WHERE nickname LIKE ? OR username LIKE ?
-                   ORDER BY created_at DESC""",
-                (f"%{search}%", f"%{search}%")
+                   ORDER BY created_at DESC LIMIT ?""",
+                (f"%{search}%", f"%{search}%", limit)
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(r) for r in rows]
         else:
             async with self.conn.execute(
-                "SELECT * FROM players ORDER BY created_at DESC"
+                "SELECT * FROM players ORDER BY created_at DESC LIMIT ?",
+                (limit,)
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(r) for r in rows]
@@ -493,10 +494,11 @@ class Database:
         """Передать капитанство."""
         await self.update_team(team_id, captain_id=new_captain_id)
 
-    async def get_all_teams(self) -> list[dict]:
+    async def get_all_teams(self, limit: int = 50) -> list[dict]:
         """Получить все команды."""
         async with self.conn.execute(
-            "SELECT * FROM teams ORDER BY created_at DESC"
+            "SELECT * FROM teams ORDER BY created_at DESC LIMIT ?",
+            (limit,)
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
@@ -1450,10 +1452,10 @@ class Database:
     # ==================== ОЧЕРЕДЬ МАТЧЕЙ ====================
 
     async def get_queued_matches(self, tournament_id: int) -> list[dict]:
-        """Получить матчи в очереди."""
+        """Получить матчи в очереди (pending)."""
         async with self.conn.execute(
             """SELECT * FROM matches
-               WHERE tournament_id = ? AND status = 'queued'
+               WHERE tournament_id = ? AND status = 'pending'
                AND participant1_id IS NOT NULL AND participant2_id IS NOT NULL
                ORDER BY round, match_number""",
             (tournament_id,)

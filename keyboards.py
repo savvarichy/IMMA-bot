@@ -407,6 +407,12 @@ class Keyboards:
                 callback_data=f"tournament_checkin_{tournament['id']}"
             )
 
+        if tournament["status"] == "active" and is_registered:
+            builder.button(
+                text=f"🟢 Лобби (Я готов)",
+                callback_data=f"player_lobby_{tournament['id']}"
+            )
+
         if tournament["status"] in ("active", "finished"):
             builder.button(
                 text=f"{Emoji.TARGET} Сетка турнира",
@@ -449,23 +455,34 @@ class Keyboards:
 
     @staticmethod
     def admin_menu() -> InlineKeyboardMarkup:
-        """Главное меню админки."""
+        """Главное меню админки (минималистичное)."""
         builder = InlineKeyboardBuilder()
         builder.button(
-            text=f"{Emoji.PLUS} Создать турнир",
+            text=f"{Emoji.PLUS} Новый турнир",
             callback_data="admin_create_tournament"
-        )
-        builder.button(
-            text=f"{Emoji.LIST} Из шаблона",
-            callback_data="admin_from_template"
         )
         builder.button(
             text=f"{Emoji.GEAR} Управление турнирами",
             callback_data="admin_tournaments"
         )
         builder.button(
-            text=f"{Emoji.SEND} Настройки канала",
-            callback_data="admin_channel"
+            text=f"{Emoji.GEAR} Другие возможности",
+            callback_data="admin_other"
+        )
+        builder.button(
+            text=f"{Emoji.BACK} Главное меню",
+            callback_data="main_menu"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def admin_other_menu() -> InlineKeyboardMarkup:
+        """Меню других возможностей."""
+        builder = InlineKeyboardBuilder()
+        builder.button(
+            text=f"{Emoji.CHART} Статистика",
+            callback_data="admin_stats"
         )
         builder.button(
             text=f"{Emoji.PEOPLE} Игроки",
@@ -476,35 +493,33 @@ class Keyboards:
             callback_data="admin_teams"
         )
         builder.button(
-            text=f"{Emoji.CHART} Статистика",
-            callback_data="admin_stats"
-        )
-        builder.button(
-            text=f"{Emoji.LIST} Логи",
-            callback_data="admin_logs"
+            text=f"{Emoji.SEND} Настройки канала",
+            callback_data="admin_channel"
         )
         builder.button(
             text=f"{Emoji.SHIELD} Админы",
             callback_data="admin_admins"
         )
         builder.button(
-            text=f"{Emoji.BACK} Главное меню",
-            callback_data="main_menu"
+            text=f"{Emoji.LIST} Логи",
+            callback_data="admin_logs"
         )
-        builder.adjust(2, 2, 2, 2, 2, 1)
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data="admin"
+        )
+        builder.adjust(2, 2, 2, 1)
         return builder.as_markup()
 
     @staticmethod
     def admin_tournament_statuses() -> InlineKeyboardMarkup:
-        """Выбор статуса для просмотра турниров."""
+        """Выбор статуса для просмотра турниров (упрощённый)."""
         builder = InlineKeyboardBuilder()
         statuses = [
             ("draft", "Черновики"),
-            ("open", "Открыта регистрация"),
-            ("checkin", "Check-in"),
+            ("open", "На регистрации"),
             ("active", "Активные"),
-            ("finished", "Завершённые"),
-            ("cancelled", "Отменённые")
+            ("finished", "Завершённые")
         ]
 
         for status, name in statuses:

@@ -782,3 +782,34 @@ async def callback_lobby_away(callback: CallbackQuery):
         reply_markup=kb.lobby_player(tournament_id, is_ready=False),
         parse_mode="HTML"
     )
+
+
+@router.callback_query(F.data.regexp(r"^player_lobby_(\d+)$"))
+async def callback_player_lobby(callback: CallbackQuery):
+    """Лобби турнира для игрока."""
+    tournament_id = int(callback.data.split("_")[2])
+
+    player = await db.get_player(callback.from_user.id)
+    if not player:
+        await callback.answer("Вы не зарегистрированы!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    is_ready = await db.get_player_lobby_status(tournament_id, player["id"]) == "ready"
+
+    text = (
+        f"<b>🟢 Лобби турнира</b>\n\n"
+        f"<b>Турнир:</b> {tournament['name']}\n\n"
+    )
+
+    if is_ready:
+        text += f"{Emoji.CHECK} Вы отмечены как <b>готовый</b>.\nОжидайте начала матча!"
+    else:
+        text += f"{Emoji.INFO} Отметьтесь как готовый, когда будете готовы играть."
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.lobby_player(tournament_id, is_ready),
+        parse_mode="HTML"
+    )
+    await callback.answer()

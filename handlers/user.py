@@ -664,3 +664,117 @@ async def callback_admin(callback: CallbackQuery):
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "admin_other")
+async def callback_admin_other(callback: CallbackQuery):
+    """Другие возможности админки."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.GEAR} Другие возможности</b>\n\nВыберите раздел:",
+        reply_markup=kb.admin_other_menu(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_players")
+async def callback_admin_players(callback: CallbackQuery):
+    """Список игроков."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    players = await db.get_all_players(limit=20)
+
+    text = f"<b>{Emoji.PEOPLE} Игроки</b>\n\n"
+    if players:
+        for p in players:
+            ban_icon = "🔴 " if p.get("is_banned") else ""
+            text += f"{ban_icon}{escape_html(p['nickname'])} (ID: {p['telegram_id']})\n"
+    else:
+        text += "Нет зарегистрированных игроков."
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.back_button("admin_other"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_teams")
+async def callback_admin_teams(callback: CallbackQuery):
+    """Список команд."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    teams = await db.get_all_teams(limit=20)
+
+    text = f"<b>{Emoji.PEOPLE} Команды</b>\n\n"
+    if teams:
+        for t in teams:
+            text += f"• {escape_html(t['name'])} ({t['format']})\n"
+    else:
+        text += "Нет зарегистрированных команд."
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.back_button("admin_other"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_admins")
+async def callback_admin_admins(callback: CallbackQuery):
+    """Список админов."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    admins = await db.get_all_admins()
+
+    text = f"<b>{Emoji.SHIELD} Админы</b>\n\n"
+    if admins:
+        for a in admins:
+            text += f"• ID: {a['telegram_id']}\n"
+    else:
+        text += "Нет админов в базе."
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.back_button("admin_other"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_logs")
+async def callback_admin_logs(callback: CallbackQuery):
+    """Последние логи."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    logs = await db.get_logs(limit=15)
+
+    text = f"<b>{Emoji.LIST} Последние действия</b>\n\n"
+    if logs:
+        for log in logs:
+            action = escape_html(log['action'])
+            details = escape_html(log.get('details', '') or '')[:30]
+            text += f"• {action}: {details}\n"
+    else:
+        text += "Нет записей."
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.back_button("admin_other"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
