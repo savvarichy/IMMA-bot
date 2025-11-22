@@ -77,10 +77,34 @@ async def _show_tournament_manage(callback: CallbackQuery, tournament_id: int) -
     participant_count = await db.get_tournament_participant_count(tournament_id)
     text = format_tournament_info(tournament, participant_count)
 
+    # Проверяем статус участия админа как игрока
+    is_registered = False
+    can_register = False
+    is_in_reserve = False
+
+    player = await db.get_player(callback.from_user.id)
+    if player:
+        if tournament["format"] == "1v1":
+            is_registered = await db.is_player_registered(tournament_id, player["id"])
+            can_register = True
+            if not is_registered:
+                is_in_reserve = await db.is_player_in_reserve(tournament_id, player["id"])
+        else:
+            team = await db.get_player_team_by_format(player["id"], tournament["format"])
+            if team:
+                is_registered = await db.is_team_registered(tournament_id, team["id"])
+                can_register = team["captain_id"] == player["id"]
+                if not is_registered:
+                    is_in_reserve = await db.is_team_in_reserve(tournament_id, team["id"])
+
+    is_checkin = tournament["status"] == "checkin"
+
     try:
         await callback.message.edit_text(
             text,
-            reply_markup=kb.admin_tournament_manage(tournament),
+            reply_markup=kb.admin_tournament_manage(
+                tournament, is_registered, can_register, is_checkin, is_in_reserve
+            ),
             parse_mode="HTML"
         )
     except TelegramBadRequest as e:
@@ -520,16 +544,22 @@ async def callback_tournament_participants(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_tournaments")
 async def callback_admin_tournaments(callback: CallbackQuery):
     """Выбор статуса турниров."""
+    from aiogram.exceptions import TelegramBadRequest
+
     if not await db.is_admin(callback.from_user.id):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    await callback.message.edit_text(
-        f"<b>{Emoji.GEAR} Управление турнирами</b>\n\n"
-        "Выберите статус для просмотра:",
-        reply_markup=kb.admin_tournament_statuses(),
-        parse_mode="HTML"
-    )
+    try:
+        await callback.message.edit_text(
+            f"<b>{Emoji.GEAR} Управление турнирами</b>\n\n"
+            "Выберите статус для просмотра:",
+            reply_markup=kb.admin_tournament_statuses(),
+            parse_mode="HTML"
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
     await callback.answer()
 
 
@@ -2156,9 +2186,10 @@ async def callback_admin_edit_date(callback: CallbackQuery, state: FSMContext):
     await state.update_data(edit_tournament_id=tournament_id)
     await state.set_state(EditTournamentStates.waiting_date)
 
+    now = datetime.now()
     await callback.message.edit_text(
         f"{Emoji.CALENDAR} <b>Выберите новую дату:</b>",
-        reply_markup=kb.calendar_keyboard(),
+        reply_markup=kb.calendar(now.year, now.month),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -2221,17 +2252,18 @@ async def callback_admin_edit_maps(callback: CallbackQuery, state: FSMContext):
 
     await callback.message.edit_text(
         f"{Emoji.MAP} <b>Выберите карты:</b>\n\nТекущие: {', '.join(tournament.get('maps', []))}",
-        reply_markup=kb.map_select(tournament.get("maps", [])),
+        reply_markup=kb.map_select(tournament.get("maps", []), tournament_id),
         parse_mode="HTML"
     )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("t_map_"), F.data.regexp(r"^t_map_"))
+@router.callback_query(F.data.startswith("t_map_"))
 async def callback_edit_map_toggle(callback: CallbackQuery, state: FSMContext):
     """Переключение карты при редактировании."""
     data = await state.get_data()
     if "edit_tournament_id" not in data:
+        # Это может быть создание турнира, пропускаем
         return
 
     map_name = callback.data.replace("t_map_", "")
@@ -2244,13 +2276,38 @@ async def callback_edit_map_toggle(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(selected_maps=selected)
 
-    tournament = await db.get_tournament(data["edit_tournament_id"])
+    tournament_id = data["edit_tournament_id"]
     await callback.message.edit_text(
         f"{Emoji.MAP} <b>Выберите карты:</b>\n\nВыбрано: {', '.join(selected) if selected else 'нет'}",
-        reply_markup=kb.map_select(selected),
+        reply_markup=kb.map_select(selected, tournament_id),
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "t_maps_save")
+async def callback_maps_save(callback: CallbackQuery, state: FSMContext):
+    """Сохранение выбранных карт при редактировании."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    data = await state.get_data()
+    tournament_id = data.get("edit_tournament_id")
+    selected_maps = data.get("selected_maps", [])
+
+    if not tournament_id:
+        await callback.answer("Ошибка: турнир не найден!", show_alert=True)
+        return
+
+    if not selected_maps:
+        await callback.answer("Выберите хотя бы одну карту!", show_alert=True)
+        return
+
+    await db.update_tournament(tournament_id, maps=selected_maps)
+    await state.clear()
+    await callback.answer("Карты сохранены!", show_alert=True)
+    await _show_tournament_manage(callback, tournament_id)
 
 
 @router.callback_query(F.data == "t_maps_done")
@@ -2427,6 +2484,13 @@ async def callback_admin_save_template(callback: CallbackQuery):
         return
 
     # Создаём шаблон на основе турнира
+    # Получаем время из турнира
+    start_time = tournament.get("start_time")
+    if isinstance(start_time, str):
+        start_time = datetime.fromisoformat(start_time)
+    default_hour = start_time.hour if start_time else 18
+    default_minute = start_time.minute if start_time else 0
+
     template_id = await db.create_template(
         name=f"Шаблон: {tournament['name']}",
         format=tournament["format"],
@@ -2435,6 +2499,8 @@ async def callback_admin_save_template(callback: CallbackQuery):
         prize_type=tournament.get("prize_type", "none"),
         prize_amount=tournament.get("prize_amount", 0),
         checkin_hours=tournament.get("checkin_hours", 0),
+        default_hour=default_hour,
+        default_minute=default_minute,
         created_by=callback.from_user.id
     )
 

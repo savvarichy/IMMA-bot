@@ -53,12 +53,14 @@ class Config:
     # Варианты времени check-in (часы до старта)
     CHECKIN_OPTIONS = [0, 1, 2, 3]  # 0 = без check-in
 
-    # Статусы турнира (упрощённые)
+    # Статусы турнира
     TOURNAMENT_STATUSES = {
         "draft": "Черновик",
         "open": "На регистрации",
+        "checkin": "Check-in",
         "active": "Активный",
-        "finished": "Завершён"
+        "finished": "Завершён",
+        "cancelled": "Отменён"
     }
 
     # Время жизни инвайт-кода команды (секунды)

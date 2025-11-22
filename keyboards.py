@@ -513,13 +513,15 @@ class Keyboards:
 
     @staticmethod
     def admin_tournament_statuses() -> InlineKeyboardMarkup:
-        """Выбор статуса для просмотра турниров (упрощённый)."""
+        """Выбор статуса для просмотра турниров."""
         builder = InlineKeyboardBuilder()
         statuses = [
             ("draft", "Черновики"),
             ("open", "На регистрации"),
+            ("checkin", "Check-in"),
             ("active", "Активные"),
-            ("finished", "Завершённые")
+            ("finished", "Завершённые"),
+            ("cancelled", "Отменённые")
         ]
 
         for status, name in statuses:
@@ -532,14 +534,44 @@ class Keyboards:
             text=f"{Emoji.BACK} Назад",
             callback_data="admin"
         )
-        builder.adjust(2, 2, 2, 1)
+        builder.adjust(2, 3, 1)
         return builder.as_markup()
 
     @staticmethod
-    def admin_tournament_manage(tournament: dict) -> InlineKeyboardMarkup:
+    def admin_tournament_manage(
+        tournament: dict,
+        is_registered: bool = False,
+        can_register: bool = False,
+        is_checkin: bool = False,
+        is_in_reserve: bool = False
+    ) -> InlineKeyboardMarkup:
         """Управление турниром (админ)."""
         builder = InlineKeyboardBuilder()
         status = tournament["status"]
+
+        # Добавляем кнопки участия для админа-игрока
+        if status == "open":
+            if is_registered:
+                builder.button(
+                    text=f"{Emoji.CROSS} Отменить регистрацию",
+                    callback_data=f"tournament_unreg_{tournament['id']}"
+                )
+            elif is_in_reserve:
+                builder.button(
+                    text=f"{Emoji.CLOCK} Покинуть резерв",
+                    callback_data=f"tournament_leave_reserve_{tournament['id']}"
+                )
+            elif can_register:
+                builder.button(
+                    text=f"{Emoji.PLUS} Участвовать",
+                    callback_data=f"tournament_reg_{tournament['id']}"
+                )
+        elif status == "checkin":
+            if is_registered:
+                builder.button(
+                    text=f"{Emoji.CHECK} Check-in",
+                    callback_data=f"tournament_checkin_{tournament['id']}"
+                )
 
         if status == "draft":
             builder.button(
@@ -675,6 +707,31 @@ class Keyboards:
         builder.button(
             text=f"{Emoji.BACK} Назад",
             callback_data="admin_create_tournament"
+        )
+        builder.adjust(4, 4, 2)
+        return builder.as_markup()
+
+    @staticmethod
+    def map_select(selected: list[str], tournament_id: int = None) -> InlineKeyboardMarkup:
+        """Выбор карт при редактировании турнира."""
+        builder = InlineKeyboardBuilder()
+
+        for map_name in config.CS2_MAPS:
+            is_selected = map_name in selected
+            icon = Emoji.CHECK if is_selected else Emoji.EMPTY
+            builder.button(
+                text=f"{icon} {map_name.replace('de_', '')}",
+                callback_data=f"t_map_{map_name}"
+            )
+
+        builder.button(
+            text=f"{Emoji.CHECK} Сохранить",
+            callback_data="t_maps_save"
+        )
+        back_cb = f"admin_t_edit_{tournament_id}" if tournament_id else "admin"
+        builder.button(
+            text=f"{Emoji.BACK} Назад",
+            callback_data=back_cb
         )
         builder.adjust(4, 4, 2)
         return builder.as_markup()

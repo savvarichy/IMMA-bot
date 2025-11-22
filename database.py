@@ -1472,10 +1472,11 @@ class Database:
 
         # Топ-5 игроков по победам
         async with self.conn.execute(
-            """SELECT p.nickname, p.wins, p.losses
+            """SELECT p.nickname, p.tournaments_won as wins,
+               (p.tournaments_played - p.tournaments_won) as losses
                FROM players p
-               WHERE p.wins > 0
-               ORDER BY p.wins DESC LIMIT 5"""
+               WHERE p.tournaments_won > 0
+               ORDER BY p.tournaments_won DESC LIMIT 5"""
         ) as cursor:
             rows = await cursor.fetchall()
             stats["top_players"] = [dict(r) for r in rows]
