@@ -9,7 +9,7 @@ from database import db
 from keyboards import kb, Emoji
 from utils import (
     validate_nickname, validate_steam_link, validate_contact,
-    format_player_info, format_tournament_info, escape_html
+    format_player_info, format_tournament_info, escape_html, extract_steam_id
 )
 from config import config
 
@@ -271,6 +271,36 @@ async def callback_cancel_registration(callback: CallbackQuery, state: FSMContex
     await callback_main_menu(callback, state)
 
 
+@router.callback_query(F.data == "skip_contact")
+async def callback_skip_contact(callback: CallbackQuery, state: FSMContext):
+    """Пропуск ввода контакта."""
+    data = await state.get_data()
+    await state.clear()
+
+    # Создаём игрока без контакта
+    await db.create_player(
+        telegram_id=callback.from_user.id,
+        username=callback.from_user.username,
+        nickname=data["nickname"],
+        steam_link=data["steam_link"],
+        contact=f"@{callback.from_user.username}" if callback.from_user.username else "Не указан"
+    )
+
+    text = (
+        f"{Emoji.CHECK} <b>Регистрация завершена!</b>\n\n"
+        f"{Emoji.GAME} <b>Никнейм:</b> {escape_html(data['nickname'])}\n"
+        f"{Emoji.LINK} <b>Steam:</b> {data['steam_link']}\n\n"
+        f"Теперь вы можете участвовать в турнирах!"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.main_menu(True),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
 @router.message(RegistrationStates.waiting_nickname)
 async def process_nickname(message: Message, state: FSMContext):
     """Обработка ввода никнейма."""
@@ -280,6 +310,17 @@ async def process_nickname(message: Message, state: FSMContext):
     if not is_valid:
         await message.answer(
             f"{Emoji.CROSS} {error}\n\nПопробуйте ещё раз:",
+            reply_markup=kb.cancel_registration(),
+            parse_mode="HTML"
+        )
+        return
+
+    # Проверяем, не занят ли никнейм
+    existing = await db.get_player_by_nickname(nickname)
+    if existing:
+        await message.answer(
+            f"{Emoji.CROSS} Ник <b>{escape_html(nickname)}</b> уже занят.\n\n"
+            f"Придумайте другой никнейм:",
             reply_markup=kb.cancel_registration(),
             parse_mode="HTML"
         )
@@ -322,18 +363,22 @@ async def process_steam(message: Message, state: FSMContext):
     if not steam_link.startswith("http"):
         steam_link = "https://" + steam_link
 
+    # Извлекаем Steam ID для превью
+    steam_id = extract_steam_id(steam_link)
+
     await state.update_data(steam_link=steam_link)
 
     text = (
         f"<b>{Emoji.PENCIL} Регистрация</b>\n\n"
         f"<b>Шаг 3 из 3</b>\n\n"
-        f"Отлично! Теперь укажите контакт для связи.\n"
-        f"Это может быть ваш Telegram (@username) или другой способ связи:"
+        f"{Emoji.CHECK} Steam: <code>{steam_id}</code>\n\n"
+        f"Укажите контакт для связи (Telegram, Discord и т.д.)\n"
+        f"или нажмите <b>Пропустить</b>:"
     )
 
     await message.answer(
         text,
-        reply_markup=kb.cancel_registration(),
+        reply_markup=kb.skip_contact(),
         parse_mode="HTML"
     )
     await state.set_state(RegistrationStates.waiting_contact)
@@ -392,6 +437,16 @@ async def callback_profile(callback: CallbackQuery):
         return
 
     text = format_player_info(player)
+
+    # Добавляем информацию о последнем турнире
+    last_tournament = await db.get_player_last_tournament(player["id"])
+    if last_tournament:
+        status_text = {
+            "active": "В процессе",
+            "finished": "Завершён"
+        }.get(last_tournament["status"], last_tournament["status"])
+        text += f"\n\n{Emoji.TROPHY} <b>Последний турнир:</b>\n{last_tournament['name']} ({status_text})"
+
     await callback.message.edit_text(
         text,
         reply_markup=kb.profile_menu(),
@@ -474,6 +529,17 @@ async def process_edit_nickname(message: Message, state: FSMContext):
     if not is_valid:
         await message.answer(
             f"{Emoji.CROSS} {error}\n\nПопробуйте ещё раз:",
+            reply_markup=kb.back_button("edit_profile"),
+            parse_mode="HTML"
+        )
+        return
+
+    # Проверяем, не занят ли никнейм другим игроком
+    existing = await db.get_player_by_nickname(nickname)
+    if existing and existing["telegram_id"] != message.from_user.id:
+        await message.answer(
+            f"{Emoji.CROSS} Ник <b>{escape_html(nickname)}</b> уже занят.\n\n"
+            f"Придумайте другой никнейм:",
             reply_markup=kb.back_button("edit_profile"),
             parse_mode="HTML"
         )

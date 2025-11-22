@@ -340,6 +340,14 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    async def get_player_by_nickname(self, nickname: str) -> Optional[dict]:
+        """Получить игрока по никнейму (case-insensitive)."""
+        async with self.conn.execute(
+            "SELECT * FROM players WHERE LOWER(nickname) = LOWER(?)", (nickname,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
     async def create_player(
         self,
         telegram_id: int,
@@ -771,6 +779,19 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    async def get_player_last_tournament(self, player_id: int) -> Optional[dict]:
+        """Получить последний турнир игрока."""
+        async with self.conn.execute(
+            """SELECT t.* FROM tournaments t
+               JOIN tournament_players tp ON t.id = tp.tournament_id
+               WHERE tp.player_id = ? AND t.status IN ('finished', 'active')
+               ORDER BY t.start_time DESC
+               LIMIT 1""",
+            (player_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
     async def get_tournament_teams(self, tournament_id: int) -> list[dict]:
         """Получить команды турнира."""
@@ -1845,7 +1866,7 @@ class Database:
         score1: int,
         score2: int
     ) -> bool:
-        """Завершить матч и обновить статусы участников (оба возвращаются в ready)."""
+        """Завершить матч и обновить статусы участников (победитель -> ready, проигравший -> eliminated)."""
         from datetime import datetime
 
         match = await self.get_match(match_id)
@@ -1858,12 +1879,12 @@ class Database:
         # Обновляем матч
         await self.set_match_result(match_id, score1, score2, winner_id)
 
-        # Оба участника возвращаются в ready (турнир завершается только вручную)
+        # Победитель возвращается в ready, проигравший выбывает
         await self.set_participant_status(
             match["tournament_id"], winner_id, match["participant1_type"], "ready"
         )
         await self.set_participant_status(
-            match["tournament_id"], loser_id, match["participant1_type"], "ready"
+            match["tournament_id"], loser_id, match["participant1_type"], "eliminated"
         )
 
         # Увеличиваем счётчик побед победителю

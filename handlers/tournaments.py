@@ -522,7 +522,12 @@ async def callback_tournament_participants(callback: CallbackQuery):
         players = await db.get_tournament_players(tournament_id)
         for i, p in enumerate(players, 1):
             check = Emoji.CHECK if p.get("checked_in") else ""
-            text += f"{i}. {escape_html(p['nickname'])} {check}\n"
+            # Формируем ссылку на профиль
+            if p.get("username"):
+                profile_link = f"<a href=\"https://t.me/{p['username']}\">{escape_html(p['nickname'])}</a>"
+            else:
+                profile_link = f"<a href=\"tg://user?id={p['telegram_id']}\">{escape_html(p['nickname'])}</a>"
+            text += f"{i}. {profile_link} {check}\n"
         text += f"\n<b>Всего:</b> {len(players)}/{tournament['max_participants']}"
     else:
         teams = await db.get_tournament_teams(tournament_id)
@@ -914,7 +919,12 @@ async def callback_admin_participants(callback: CallbackQuery):
         players = await db.get_tournament_players(tournament_id)
         for i, p in enumerate(players, 1):
             check = Emoji.CHECK if p.get("checked_in") else ""
-            text += f"{i}. {escape_html(p['nickname'])} {check}\n"
+            # Формируем ссылку на профиль
+            if p.get("username"):
+                profile_link = f"<a href=\"https://t.me/{p['username']}\">{escape_html(p['nickname'])}</a>"
+            else:
+                profile_link = f"<a href=\"tg://user?id={p['telegram_id']}\">{escape_html(p['nickname'])}</a>"
+            text += f"{i}. {profile_link} {check}\n"
         text += f"\n<b>Всего:</b> {len(players)}/{tournament['max_participants']}"
     else:
         teams = await db.get_tournament_teams(tournament_id)

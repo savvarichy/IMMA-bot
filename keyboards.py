@@ -148,6 +148,20 @@ class Keyboards:
             )]
         ])
 
+    @staticmethod
+    def skip_contact() -> InlineKeyboardMarkup:
+        """Пропуск контакта при регистрации."""
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"{Emoji.NEXT} Пропустить",
+                callback_data="skip_contact"
+            )],
+            [InlineKeyboardButton(
+                text=f"{Emoji.CROSS} Отменить регистрацию",
+                callback_data="cancel_registration"
+            )]
+        ])
+
     # ==================== ПРОФИЛЬ ====================
 
     @staticmethod
