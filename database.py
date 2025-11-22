@@ -192,6 +192,30 @@ class Database:
                 UNIQUE(tournament_id, channel_id)
             );
 
+            -- Резервный список турниров (игроки)
+            CREATE TABLE IF NOT EXISTS tournament_reserve_players (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tournament_id INTEGER NOT NULL,
+                player_id INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+                FOREIGN KEY (player_id) REFERENCES players(id),
+                UNIQUE(tournament_id, player_id)
+            );
+
+            -- Резервный список турниров (команды)
+            CREATE TABLE IF NOT EXISTS tournament_reserve_teams (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tournament_id INTEGER NOT NULL,
+                team_id INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+                FOREIGN KEY (team_id) REFERENCES teams(id),
+                UNIQUE(tournament_id, team_id)
+            );
+
             -- Индексы
             CREATE INDEX IF NOT EXISTS idx_players_telegram ON players(telegram_id);
             CREATE INDEX IF NOT EXISTS idx_teams_captain ON teams(captain_id);
@@ -1059,6 +1083,154 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    # ==================== РЕЗЕРВНЫЙ СПИСОК ====================
+
+    async def get_player_active_tournament_count(self, player_id: int) -> int:
+        """Получить количество активных турниров игрока."""
+        async with self.conn.execute(
+            """SELECT COUNT(*) as cnt FROM tournament_players tp
+               JOIN tournaments t ON tp.tournament_id = t.id
+               WHERE tp.player_id = ? AND t.status IN ('open', 'checkin', 'active')""",
+            (player_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["cnt"] if row else 0
+
+    async def get_team_active_tournament_count(self, team_id: int) -> int:
+        """Получить количество активных турниров команды."""
+        async with self.conn.execute(
+            """SELECT COUNT(*) as cnt FROM tournament_teams tt
+               JOIN tournaments t ON tt.tournament_id = t.id
+               WHERE tt.team_id = ? AND t.status IN ('open', 'checkin', 'active')""",
+            (team_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["cnt"] if row else 0
+
+    async def add_player_to_reserve(self, tournament_id: int, player_id: int) -> bool:
+        """Добавить игрока в резервный список."""
+        # Получаем текущую позицию
+        async with self.conn.execute(
+            """SELECT COALESCE(MAX(position), 0) + 1 as next_pos
+               FROM tournament_reserve_players WHERE tournament_id = ?""",
+            (tournament_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            position = row["next_pos"] if row else 1
+
+        # Проверяем лимит резерва
+        if position > config.RESERVE_LIST_SIZE:
+            return False
+
+        try:
+            await self.conn.execute(
+                """INSERT INTO tournament_reserve_players (tournament_id, player_id, position)
+                   VALUES (?, ?, ?)""",
+                (tournament_id, player_id, position)
+            )
+            await self.conn.commit()
+            return True
+        except aiosqlite.IntegrityError:
+            return False
+
+    async def add_team_to_reserve(self, tournament_id: int, team_id: int) -> bool:
+        """Добавить команду в резервный список."""
+        async with self.conn.execute(
+            """SELECT COALESCE(MAX(position), 0) + 1 as next_pos
+               FROM tournament_reserve_teams WHERE tournament_id = ?""",
+            (tournament_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            position = row["next_pos"] if row else 1
+
+        if position > config.RESERVE_LIST_SIZE:
+            return False
+
+        try:
+            await self.conn.execute(
+                """INSERT INTO tournament_reserve_teams (tournament_id, team_id, position)
+                   VALUES (?, ?, ?)""",
+                (tournament_id, team_id, position)
+            )
+            await self.conn.commit()
+            return True
+        except aiosqlite.IntegrityError:
+            return False
+
+    async def get_reserve_players(self, tournament_id: int) -> list[dict]:
+        """Получить резервный список игроков."""
+        async with self.conn.execute(
+            """SELECT p.*, rp.position FROM players p
+               JOIN tournament_reserve_players rp ON p.id = rp.player_id
+               WHERE rp.tournament_id = ?
+               ORDER BY rp.position""",
+            (tournament_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_reserve_teams(self, tournament_id: int) -> list[dict]:
+        """Получить резервный список команд."""
+        async with self.conn.execute(
+            """SELECT t.*, rt.position FROM teams t
+               JOIN tournament_reserve_teams rt ON t.id = rt.team_id
+               WHERE rt.tournament_id = ?
+               ORDER BY rt.position""",
+            (tournament_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def remove_player_from_reserve(self, tournament_id: int, player_id: int) -> None:
+        """Удалить игрока из резервного списка."""
+        await self.conn.execute(
+            "DELETE FROM tournament_reserve_players WHERE tournament_id = ? AND player_id = ?",
+            (tournament_id, player_id)
+        )
+        await self.conn.commit()
+
+    async def remove_team_from_reserve(self, tournament_id: int, team_id: int) -> None:
+        """Удалить команду из резервного списка."""
+        await self.conn.execute(
+            "DELETE FROM tournament_reserve_teams WHERE tournament_id = ? AND team_id = ?",
+            (tournament_id, team_id)
+        )
+        await self.conn.commit()
+
+    async def is_player_in_reserve(self, tournament_id: int, player_id: int) -> bool:
+        """Проверить, находится ли игрок в резерве."""
+        async with self.conn.execute(
+            "SELECT 1 FROM tournament_reserve_players WHERE tournament_id = ? AND player_id = ?",
+            (tournament_id, player_id)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def is_team_in_reserve(self, tournament_id: int, team_id: int) -> bool:
+        """Проверить, находится ли команда в резерве."""
+        async with self.conn.execute(
+            "SELECT 1 FROM tournament_reserve_teams WHERE tournament_id = ? AND team_id = ?",
+            (tournament_id, team_id)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def get_reserve_position(self, tournament_id: int, player_id: int = None, team_id: int = None) -> int:
+        """Получить позицию в резерве (0 если не в резерве)."""
+        if player_id:
+            async with self.conn.execute(
+                "SELECT position FROM tournament_reserve_players WHERE tournament_id = ? AND player_id = ?",
+                (tournament_id, player_id)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row["position"] if row else 0
+        elif team_id:
+            async with self.conn.execute(
+                "SELECT position FROM tournament_reserve_teams WHERE tournament_id = ? AND team_id = ?",
+                (tournament_id, team_id)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row["position"] if row else 0
+        return 0
 
 
 # Глобальный экземпляр

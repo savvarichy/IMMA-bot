@@ -83,10 +83,23 @@ class ChannelService:
 ⏰ До начала: <b>{time_until}</b>"""
 
         # Добавляем статус
+        # Проверяем "скоро начало" - если до старта меньше 15 минут
+        from datetime import datetime
+        start_time = tournament["start_time"]
+        if isinstance(start_time, str):
+            start_time = datetime.fromisoformat(start_time)
+        minutes_until = (start_time - datetime.now()).total_seconds() / 60
+
         if tournament["status"] == "open":
-            text += "\n\n✅ <b>Регистрация открыта!</b>"
+            if 0 < minutes_until <= config.STARTING_SOON_MINUTES:
+                text += "\n\n⏰ <b>Скоро начало!</b>"
+            else:
+                text += "\n\n✅ <b>Регистрация открыта!</b>"
         elif tournament["status"] == "checkin":
-            text += "\n\n🔔 <b>Check-in идёт!</b>"
+            if 0 < minutes_until <= config.STARTING_SOON_MINUTES:
+                text += "\n\n⏰ <b>Скоро начало! Check-in идёт!</b>"
+            else:
+                text += "\n\n🔔 <b>Check-in идёт!</b>"
         elif tournament["status"] == "active":
             text += "\n\n🔥 <b>Турнир идёт!</b>"
         elif tournament["status"] == "finished":

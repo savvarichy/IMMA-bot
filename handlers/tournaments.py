@@ -59,6 +59,30 @@ class BroadcastStates(StatesGroup):
     waiting_message = State()
 
 
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+
+async def _show_tournament_manage(callback: CallbackQuery, tournament_id: int) -> None:
+    """Показать меню управления турниром (админ)."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
+    participant_count = await db.get_tournament_participant_count(tournament_id)
+    text = format_tournament_info(tournament, participant_count)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.admin_tournament_manage(tournament),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
 # ==================== ПРОСМОТР ТУРНИРОВ (USER) ====================
 
 @router.callback_query(F.data == "tournaments")
@@ -136,7 +160,7 @@ async def callback_my_tournaments(callback: CallbackQuery):
 
 @router.callback_query(F.data.regexp(r"^tournament_(\d+)$"))
 async def callback_tournament_view(callback: CallbackQuery):
-    """Просмотр турнира."""
+    """Просмотр турнира (с определением контекста: админ или юзер)."""
     tournament_id = int(callback.data.split("_")[1])
     tournament = await db.get_tournament(tournament_id)
 
@@ -144,17 +168,31 @@ async def callback_tournament_view(callback: CallbackQuery):
         await callback.answer("Турнир не найден!", show_alert=True)
         return
 
+    # Если админ - показываем управление турниром
+    if await db.is_admin(callback.from_user.id):
+        await _show_tournament_manage(callback, tournament_id)
+        return
+
+    # Для обычных пользователей - просмотр турнира
     player = await db.get_player(callback.from_user.id)
     participant_count = await db.get_tournament_participant_count(tournament_id)
 
     is_registered = False
     can_register = False
     checked_in = False
+    team_status_text = ""
+    is_in_reserve = False
+    reserve_position = 0
 
     if player:
         if tournament["format"] == "1v1":
             is_registered = await db.is_player_registered(tournament_id, player["id"])
             can_register = True
+            # Проверяем резерв
+            if not is_registered:
+                is_in_reserve = await db.is_player_in_reserve(tournament_id, player["id"])
+                if is_in_reserve:
+                    reserve_position = await db.get_reserve_position(tournament_id, player_id=player["id"])
         else:
             # Проверяем команду нужного формата
             team = await db.get_player_team_by_format(player["id"], tournament["format"])
@@ -162,19 +200,63 @@ async def callback_tournament_view(callback: CallbackQuery):
                 is_registered = await db.is_team_registered(tournament_id, team["id"])
                 # Только капитан может регистрировать
                 can_register = team["captain_id"] == player["id"]
+                if not can_register and not is_registered:
+                    team_status_text = f"\n\n{Emoji.INFO} Только капитан команды может зарегистрировать её на турнир."
+                # Проверяем резерв для команды
+                if not is_registered:
+                    is_in_reserve = await db.is_team_in_reserve(tournament_id, team["id"])
+                    if is_in_reserve:
+                        reserve_position = await db.get_reserve_position(tournament_id, team_id=team["id"])
+            else:
+                # У игрока нет команды нужного формата
+                format_name = config.TOURNAMENT_FORMATS.get(tournament["format"], {}).get("name", tournament["format"])
+                team_status_text = f"\n\n{Emoji.WARNING} У вас нет команды формата <b>{format_name}</b>. Создайте или вступите в команду."
 
     is_checkin = tournament["status"] == "checkin"
 
     text = format_tournament_info(tournament, participant_count)
 
+    # Показываем позицию в резерве
+    if is_in_reserve:
+        text += f"\n\n{Emoji.CLOCK} <b>Вы в резервном списке</b> (позиция {reserve_position})"
+
+    if team_status_text:
+        text += team_status_text
+
     await callback.message.edit_text(
         text,
         reply_markup=kb.tournament_view(
-            tournament, is_registered, can_register, is_checkin, checked_in
+            tournament, is_registered, can_register, is_checkin, checked_in, is_in_reserve
         ),
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^tournament_leave_reserve_(\d+)$"))
+async def callback_tournament_leave_reserve(callback: CallbackQuery):
+    """Выход из резервного списка."""
+    tournament_id = int(callback.data.split("_")[3])
+
+    player = await db.get_player(callback.from_user.id)
+    if not player:
+        await callback.answer("Вы не зарегистрированы!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
+    if tournament["format"] == "1v1":
+        await db.remove_player_from_reserve(tournament_id, player["id"])
+    else:
+        team = await db.get_player_team_by_format(player["id"], tournament["format"])
+        if team:
+            await db.remove_team_from_reserve(tournament_id, team["id"])
+
+    await callback.answer("Вы покинули резервный список!", show_alert=True)
+    await callback_tournament_view(callback)
 
 
 @router.callback_query(F.data.regexp(r"^tournament_reg_(\d+)$"))
@@ -193,18 +275,34 @@ async def callback_tournament_register(callback: CallbackQuery):
         return
 
     participant_count = await db.get_tournament_participant_count(tournament_id)
-    if participant_count >= tournament["max_participants"]:
-        await callback.answer("Турнир заполнен!", show_alert=True)
-        return
+    is_full = participant_count >= tournament["max_participants"]
 
     if tournament["format"] == "1v1":
-        success = await db.register_player_to_tournament(tournament_id, player["id"])
-        if success:
-            await callback.answer("Вы зарегистрированы на турнир!", show_alert=True)
-            # Обновляем пост в канале
-            await _update_channel_post_if_exists(tournament_id, callback.bot)
+        # Проверяем лимит турниров
+        if config.MAX_ACTIVE_TOURNAMENTS_PER_PLAYER > 0:
+            active_count = await db.get_player_active_tournament_count(player["id"])
+            if active_count >= config.MAX_ACTIVE_TOURNAMENTS_PER_PLAYER:
+                await callback.answer(
+                    f"Вы уже зарегистрированы на {active_count} турниров! Лимит: {config.MAX_ACTIVE_TOURNAMENTS_PER_PLAYER}",
+                    show_alert=True
+                )
+                return
+
+        if is_full:
+            # Предлагаем резерв
+            success = await db.add_player_to_reserve(tournament_id, player["id"])
+            if success:
+                pos = await db.get_reserve_position(tournament_id, player_id=player["id"])
+                await callback.answer(f"Турнир заполнен! Вы добавлены в резерв (позиция {pos})", show_alert=True)
+            else:
+                await callback.answer("Турнир заполнен и резерв тоже!", show_alert=True)
         else:
-            await callback.answer("Вы уже зарегистрированы!", show_alert=True)
+            success = await db.register_player_to_tournament(tournament_id, player["id"])
+            if success:
+                await callback.answer("Вы зарегистрированы на турнир!", show_alert=True)
+                await _update_channel_post_if_exists(tournament_id, callback.bot)
+            else:
+                await callback.answer("Вы уже зарегистрированы!", show_alert=True)
     else:
         team = await db.get_player_team_by_format(player["id"], tournament["format"])
         if not team:
@@ -231,16 +329,24 @@ async def callback_tournament_register(callback: CallbackQuery):
             )
             return
 
-        success = await db.register_team_to_tournament(tournament_id, team["id"])
-        if success:
-            await callback.answer(
-                f"Команда {team['name']} зарегистрирована!",
-                show_alert=True
-            )
-            # Обновляем пост в канале
-            await _update_channel_post_if_exists(tournament_id, callback.bot)
+        if is_full:
+            # Предлагаем резерв
+            success = await db.add_team_to_reserve(tournament_id, team["id"])
+            if success:
+                pos = await db.get_reserve_position(tournament_id, team_id=team["id"])
+                await callback.answer(f"Турнир заполнен! Команда добавлена в резерв (позиция {pos})", show_alert=True)
+            else:
+                await callback.answer("Турнир заполнен и резерв тоже!", show_alert=True)
         else:
-            await callback.answer("Команда уже зарегистрирована!", show_alert=True)
+            success = await db.register_team_to_tournament(tournament_id, team["id"])
+            if success:
+                await callback.answer(
+                    f"Команда {team['name']} зарегистрирована!",
+                    show_alert=True
+                )
+                await _update_channel_post_if_exists(tournament_id, callback.bot)
+            else:
+                await callback.answer("Команда уже зарегистрирована!", show_alert=True)
 
     # Обновляем просмотр
     await callback_tournament_view(callback)
@@ -399,17 +505,33 @@ async def callback_admin_tournament_manage(callback: CallbackQuery):
     await callback.answer()
 
 
-# При клике на турнир из списка - показываем управление
-@router.callback_query(F.data.regexp(r"^tournament_(\d+)$"))
-async def callback_tournament_click(callback: CallbackQuery):
-    """Клик на турнир (определяем контекст)."""
-    # Если админ - показываем управление
-    if await db.is_admin(callback.from_user.id):
-        tournament_id = callback.data.split("_")[1]
-        callback.data = f"admin_t_manage_{tournament_id}"
-        await callback_admin_tournament_manage(callback)
+@router.callback_query(F.data.regexp(r"^admin_t_quickstart_(\d+)$"))
+async def callback_admin_quickstart(callback: CallbackQuery):
+    """Быстрый старт турнира (открыть + опубликовать)."""
+    tournament_id = int(callback.data.split("_")[3])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    # 1. Открываем регистрацию
+    await db.update_tournament_status(tournament_id, "open")
+    await db.log_action(callback.from_user.id, "tournament_quickstart", f"ID: {tournament_id}")
+
+    # 2. Публикуем в канал
+    channel = await db.get_channel()
+    if channel:
+        from services.channel import init_channel_service
+        channel_service = init_channel_service(callback.bot)
+        success, msg = await channel_service.publish_post(tournament_id)
+        if success:
+            await callback.answer("Регистрация открыта и пост опубликован!", show_alert=True)
+        else:
+            await callback.answer(f"Регистрация открыта, но пост не опубликован: {msg}", show_alert=True)
     else:
-        await callback_tournament_view(callback)
+        await callback.answer("Регистрация открыта! Канал не привязан - пост не опубликован.", show_alert=True)
+
+    await _show_tournament_manage(callback, tournament_id)
 
 
 @router.callback_query(F.data.regexp(r"^admin_t_open_(\d+)$"))
@@ -427,8 +549,7 @@ async def callback_admin_open_tournament(callback: CallbackQuery):
     await callback.answer("Регистрация открыта!", show_alert=True)
 
     # Обновляем просмотр
-    callback.data = f"admin_t_manage_{tournament_id}"
-    await callback_admin_tournament_manage(callback)
+    await _show_tournament_manage(callback, tournament_id)
 
 
 @router.callback_query(F.data.regexp(r"^admin_t_close_(\d+)$"))
@@ -443,8 +564,7 @@ async def callback_admin_close_tournament(callback: CallbackQuery):
     await db.update_tournament_status(tournament_id, "draft")
     await callback.answer("Регистрация закрыта!", show_alert=True)
 
-    callback.data = f"admin_t_manage_{tournament_id}"
-    await callback_admin_tournament_manage(callback)
+    await _show_tournament_manage(callback, tournament_id)
 
 
 @router.callback_query(F.data.regexp(r"^admin_t_checkin_(\d+)$"))
@@ -461,8 +581,7 @@ async def callback_admin_start_checkin(callback: CallbackQuery):
 
     await callback.answer("Check-in запущен!", show_alert=True)
 
-    callback.data = f"admin_t_manage_{tournament_id}"
-    await callback_admin_tournament_manage(callback)
+    await _show_tournament_manage(callback, tournament_id)
 
 
 @router.callback_query(F.data.regexp(r"^admin_t_start_(\d+)$"))
@@ -506,8 +625,7 @@ async def callback_admin_start_tournament(callback: CallbackQuery):
 
     await callback.answer("Турнир начался!", show_alert=True)
 
-    callback.data = f"admin_t_manage_{tournament_id}"
-    await callback_admin_tournament_manage(callback)
+    await _show_tournament_manage(callback, tournament_id)
 
 
 @router.callback_query(F.data.regexp(r"^admin_t_cancel_(\d+)$"))
@@ -559,8 +677,38 @@ async def callback_admin_docancel_tournament(callback: CallbackQuery):
 async def callback_admin_participants(callback: CallbackQuery):
     """Участники турнира (админ)."""
     tournament_id = int(callback.data.split("_")[3])
-    callback.data = f"tournament_participants_{tournament_id}"
-    await callback_tournament_participants(callback)
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
+    text = f"<b>{Emoji.PEOPLE} Участники турнира</b>\n"
+    text += f"<b>{tournament['name']}</b>\n\n"
+
+    if tournament["format"] == "1v1":
+        players = await db.get_tournament_players(tournament_id)
+        for i, p in enumerate(players, 1):
+            check = Emoji.CHECK if p.get("checked_in") else ""
+            text += f"{i}. {escape_html(p['nickname'])} {check}\n"
+        text += f"\n<b>Всего:</b> {len(players)}/{tournament['max_participants']}"
+    else:
+        teams = await db.get_tournament_teams(tournament_id)
+        for i, t in enumerate(teams, 1):
+            check = Emoji.CHECK if t.get("checked_in") else ""
+            text += f"{i}. {escape_html(t['name'])} {check}\n"
+        text += f"\n<b>Всего:</b> {len(teams)}/{tournament['max_participants']}"
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.back_button(f"admin_t_manage_{tournament_id}"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
 
 
 # ==================== СОЗДАНИЕ ТУРНИРА ====================
@@ -1360,6 +1508,42 @@ async def callback_admin_channel_remove(callback: CallbackQuery):
 
 # ==================== ПУБЛИКАЦИЯ В КАНАЛ ====================
 
+@router.callback_query(F.data.regexp(r"^admin_t_preview_(\d+)$"))
+async def callback_admin_preview(callback: CallbackQuery):
+    """Превью поста о турнире."""
+    tournament_id = int(callback.data.split("_")[3])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
+    from services.channel import init_channel_service
+    channel_service = init_channel_service(callback.bot)
+
+    participant_count = await db.get_tournament_participant_count(tournament_id)
+    bot_username = await channel_service.get_bot_username()
+    text = channel_service.generate_post_text(tournament, participant_count, bot_username)
+
+    await callback.message.edit_text(
+        f"<b>{Emoji.SEARCH} Превью поста</b>\n"
+        f"<i>Так будет выглядеть пост в канале:</i>\n\n"
+        f"{'─' * 30}\n\n"
+        f"{text}\n\n"
+        f"{'─' * 30}",
+        reply_markup=kb.confirm_cancel(
+            f"admin_t_publish_{tournament_id}",
+            f"admin_t_manage_{tournament_id}"
+        ),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data.regexp(r"^admin_t_publish_(\d+)$"))
 async def callback_admin_publish(callback: CallbackQuery):
     """Публикация поста о турнире в канал."""
@@ -1392,6 +1576,9 @@ async def callback_admin_publish(callback: CallbackQuery):
         await db.log_action(callback.from_user.id, "tournament_publish", f"ID: {tournament_id}")
     else:
         await callback.answer(f"❌ {message}", show_alert=True)
+
+    # Возвращаемся к управлению турниром
+    await _show_tournament_manage(callback, tournament_id)
 
 
 # ==================== ДУБЛИРОВАНИЕ ТУРНИРА ====================
@@ -1610,5 +1797,4 @@ async def callback_admin_to_draft(callback: CallbackQuery):
     await db.update_tournament_status(tournament_id, "draft")
     await callback.answer("Турнир помещён в черновик!", show_alert=True)
 
-    callback.data = f"admin_t_manage_{tournament_id}"
-    await callback_admin_tournament_manage(callback)
+    await _show_tournament_manage(callback, tournament_id)

@@ -57,6 +57,7 @@ class Config:
     TOURNAMENT_STATUSES = {
         "draft": "Черновик",
         "open": "Регистрация открыта",
+        "starting_soon": "Скоро начало",
         "checkin": "Check-in",
         "active": "Идёт турнир",
         "finished": "Завершён",
@@ -65,6 +66,15 @@ class Config:
 
     # Время жизни инвайт-кода команды (секунды)
     INVITE_CODE_LIFETIME = 24 * 60 * 60  # 24 часа
+
+    # Лимит активных турниров на игрока (0 = без лимита)
+    MAX_ACTIVE_TOURNAMENTS_PER_PLAYER = 3
+
+    # Лимит резервного списка (максимум игроков в резерве)
+    RESERVE_LIST_SIZE = 5
+
+    # Время до начала для статуса "Скоро начало" (минуты)
+    STARTING_SOON_MINUTES = 15
 
     # Шаблоны турниров
     TOURNAMENT_TEMPLATES = {

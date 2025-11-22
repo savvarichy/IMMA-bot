@@ -378,7 +378,8 @@ class Keyboards:
         is_registered: bool,
         can_register: bool,
         is_checkin: bool = False,
-        checked_in: bool = False
+        checked_in: bool = False,
+        is_in_reserve: bool = False
     ) -> InlineKeyboardMarkup:
         """Просмотр турнира."""
         builder = InlineKeyboardBuilder()
@@ -388,6 +389,11 @@ class Keyboards:
                 builder.button(
                     text=f"{Emoji.CROSS} Отменить регистрацию",
                     callback_data=f"tournament_unreg_{tournament['id']}"
+                )
+            elif is_in_reserve:
+                builder.button(
+                    text=f"{Emoji.CROSS} Покинуть резерв",
+                    callback_data=f"tournament_leave_reserve_{tournament['id']}"
                 )
             else:
                 builder.button(
@@ -564,6 +570,10 @@ class Keyboards:
 
         # Кнопка публикации в канал
         if status in ("draft", "open", "checkin"):
+            builder.button(
+                text=f"{Emoji.SEARCH} Превью поста",
+                callback_data=f"admin_t_preview_{tournament['id']}"
+            )
             builder.button(
                 text=f"{Emoji.SEND} Опубликовать в канал",
                 callback_data=f"admin_t_publish_{tournament['id']}"
@@ -837,6 +847,10 @@ class Keyboards:
     def tournament_created_menu(tournament_id: int) -> InlineKeyboardMarkup:
         """Меню после создания турнира."""
         builder = InlineKeyboardBuilder()
+        builder.button(
+            text=f"{Emoji.PLAY} Быстрый старт (открыть + опубликовать)",
+            callback_data=f"admin_t_quickstart_{tournament_id}"
+        )
         builder.button(
             text=f"{Emoji.UNLOCK} Открыть регистрацию",
             callback_data=f"admin_t_open_{tournament_id}"
