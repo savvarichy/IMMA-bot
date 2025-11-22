@@ -2,18 +2,106 @@
 
 A Telegram bot for managing CS2 (Counter-Strike 2) tournaments with player registration, team management, bracket generation, and match coordination.
 
-## Quick Start
+## Запуск нового бота
+
+### 1. Создание бота в Telegram
+
+1. Откройте [@BotFather](https://t.me/BotFather) в Telegram
+2. Отправьте `/newbot`
+3. Введите имя бота (например: "IMMA Championship")
+4. Введите username бота (например: `imma_championship_bot`)
+5. Скопируйте полученный **токен** (формат: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+
+### 2. Настройка платежей (Telegram Stars)
+
+Если планируете использовать взносы за участие:
+
+1. В @BotFather отправьте `/mybots`
+2. Выберите вашего бота
+3. Нажмите **Payments** → **Telegram Stars**
+4. Включите Telegram Stars для бота
+
+### 3. Получение своего Telegram ID
+
+1. Откройте [@userinfobot](https://t.me/userinfobot) или [@getmyid_bot](https://t.me/getmyid_bot)
+2. Отправьте `/start`
+3. Скопируйте ваш **ID** (число, например: `123456789`)
+
+### 4. Установка и настройка
 
 ```bash
-# Install dependencies
+# Клонируйте репозиторий
+git clone <repository_url>
+cd IMMA-bot
+
+# Установите зависимости
 pip install -r requirements.txt
 
-# Configure environment
+# Создайте файл конфигурации
 cp .env.example .env
-# Edit .env with your BOT_TOKEN, ADMIN_IDS, OWNER_ID
+```
 
-# Run the bot
+Отредактируйте `.env`:
+
+```env
+BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz  # Токен от BotFather
+ADMIN_IDS=123456789,987654321                    # ID админов через запятую
+OWNER_ID=123456789                               # Ваш ID (главный админ)
+TIMEZONE=Europe/Moscow                           # Часовой пояс
+DATABASE_PATH=bot_database.db                    # Путь к базе данных
+```
+
+### 5. Запуск бота
+
+```bash
 python bot.py
+```
+
+При первом запуске автоматически создаётся база данных.
+
+### 6. Первые шаги после запуска
+
+1. Напишите боту `/start` — зарегистрируйтесь как игрок
+2. Напишите `/admin` — откроется админ-панель
+3. В админ-панели:
+   - **Другое** → **Настройки канала** — привяжите канал для анонсов
+   - **Другое** → **Админы призов** — укажите контакты для выдачи призов
+   - **Создать турнир** — создайте первый турнир
+
+### 7. Привязка канала (опционально)
+
+1. Создайте канал в Telegram
+2. Добавьте бота в администраторы канала (с правом публикации)
+3. В боте: **Админ** → **Другое** → **Настройки канала**
+4. Перешлите любое сообщение из канала боту
+
+### Запуск в фоне (Linux)
+
+```bash
+# Через screen
+screen -S imma_bot
+python bot.py
+# Ctrl+A, D для отсоединения
+
+# Или через systemd (создайте /etc/systemd/system/imma-bot.service)
+[Unit]
+Description=IMMA Championship Bot
+After=network.target
+
+[Service]
+Type=simple
+User=your_user
+WorkingDirectory=/path/to/IMMA-bot
+ExecStart=/usr/bin/python3 bot.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable imma-bot
+sudo systemctl start imma-bot
 ```
 
 ## Project Structure
