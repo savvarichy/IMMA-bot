@@ -83,6 +83,71 @@ async def _show_tournament_manage(callback: CallbackQuery, tournament_id: int) -
     await callback.answer()
 
 
+async def _show_tournament_view(callback: CallbackQuery, tournament_id: int) -> None:
+    """Показать турнир пользователю."""
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
+    # Если админ - показываем управление турниром
+    if await db.is_admin(callback.from_user.id):
+        await _show_tournament_manage(callback, tournament_id)
+        return
+
+    player = await db.get_player(callback.from_user.id)
+    participant_count = await db.get_tournament_participant_count(tournament_id)
+
+    is_registered = False
+    can_register = False
+    checked_in = False
+    team_status_text = ""
+    is_in_reserve = False
+    reserve_position = 0
+
+    if player:
+        if tournament["format"] == "1v1":
+            is_registered = await db.is_player_registered(tournament_id, player["id"])
+            can_register = True
+            if not is_registered:
+                is_in_reserve = await db.is_player_in_reserve(tournament_id, player["id"])
+                if is_in_reserve:
+                    reserve_position = await db.get_reserve_position(tournament_id, player_id=player["id"])
+        else:
+            team = await db.get_player_team_by_format(player["id"], tournament["format"])
+            if team:
+                is_registered = await db.is_team_registered(tournament_id, team["id"])
+                can_register = team["captain_id"] == player["id"]
+                if not can_register and not is_registered:
+                    team_status_text = f"\n\n{Emoji.INFO} Только капитан команды может зарегистрировать её на турнир."
+                if not is_registered:
+                    is_in_reserve = await db.is_team_in_reserve(tournament_id, team["id"])
+                    if is_in_reserve:
+                        reserve_position = await db.get_reserve_position(tournament_id, team_id=team["id"])
+            else:
+                format_name = config.TOURNAMENT_FORMATS.get(tournament["format"], {}).get("name", tournament["format"])
+                team_status_text = f"\n\n{Emoji.WARNING} У вас нет команды формата <b>{format_name}</b>. Создайте или вступите в команду."
+
+    is_checkin = tournament["status"] == "checkin"
+
+    text = format_tournament_info(tournament, participant_count)
+
+    if is_in_reserve:
+        text += f"\n\n{Emoji.CLOCK} <b>Вы в резервном списке</b> (позиция {reserve_position})"
+
+    if team_status_text:
+        text += team_status_text
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.tournament_view(
+            tournament, is_registered, can_register, is_checkin, checked_in, is_in_reserve
+        ),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
 # ==================== ПРОСМОТР ТУРНИРОВ (USER) ====================
 
 @router.callback_query(F.data == "tournaments")
@@ -256,7 +321,7 @@ async def callback_tournament_leave_reserve(callback: CallbackQuery):
             await db.remove_team_from_reserve(tournament_id, team["id"])
 
     await callback.answer("Вы покинули резервный список!", show_alert=True)
-    await callback_tournament_view(callback)
+    await _show_tournament_view(callback, tournament_id)
 
 
 @router.callback_query(F.data.regexp(r"^tournament_reg_(\d+)$"))
@@ -349,7 +414,7 @@ async def callback_tournament_register(callback: CallbackQuery):
                 await callback.answer("Команда уже зарегистрирована!", show_alert=True)
 
     # Обновляем просмотр
-    await callback_tournament_view(callback)
+    await _show_tournament_view(callback, tournament_id)
 
 
 @router.callback_query(F.data.regexp(r"^tournament_unreg_(\d+)$"))
@@ -374,7 +439,7 @@ async def callback_tournament_unregister(callback: CallbackQuery):
     await callback.answer("Регистрация отменена!", show_alert=True)
     # Обновляем пост в канале
     await _update_channel_post_if_exists(tournament_id, callback.bot)
-    await callback_tournament_view(callback)
+    await _show_tournament_view(callback, tournament_id)
 
 
 @router.callback_query(F.data.regexp(r"^tournament_checkin_(\d+)$"))
@@ -397,7 +462,7 @@ async def callback_tournament_checkin(callback: CallbackQuery):
             await db.checkin_team(tournament_id, team["id"])
 
     await callback.answer("Check-in выполнен!", show_alert=True)
-    await callback_tournament_view(callback)
+    await _show_tournament_view(callback, tournament_id)
 
 
 @router.callback_query(F.data.regexp(r"^tournament_participants_(\d+)$"))
