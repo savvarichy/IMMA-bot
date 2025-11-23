@@ -58,6 +58,7 @@ class Emoji:
     PIN = "📍"
     FLAG = "🚩"
     BOOM = "💥"
+    CANCEL = "🚫"
 
     # Прогресс-бар
     FILLED = "▓"
