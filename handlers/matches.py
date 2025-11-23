@@ -163,7 +163,7 @@ async def callback_admin_enter_result(callback: CallbackQuery):
 
 @router.callback_query(F.data.regexp(r"^match_result_(\d+)$"))
 async def callback_match_result(callback: CallbackQuery, state: FSMContext):
-    """Выбор результата матча."""
+    """Ввод результата матча - сразу запрашиваем счёт."""
     match_id = int(callback.data.split("_")[2])
 
     if not await db.is_admin(callback.from_user.id):
@@ -193,8 +193,7 @@ async def callback_match_result(callback: CallbackQuery, state: FSMContext):
         match_id=match_id,
         tournament_id=match["tournament_id"],
         p1_name=p1_name,
-        p2_name=p2_name,
-        winner_position=1  # По умолчанию победитель - первый
+        p2_name=p2_name
     )
 
     text = (
@@ -202,14 +201,16 @@ async def callback_match_result(callback: CallbackQuery, state: FSMContext):
         f"<b>{p1_name}</b>\n"
         f"      vs\n"
         f"<b>{p2_name}</b>\n\n"
-        f"Выберите счёт (победа <b>{p1_name}</b>):"
+        f"{Emoji.PENCIL} <b>Введите счёт:</b>\n"
+        f"Формат: <code>16:14</code>"
     )
 
     await callback.message.edit_text(
         text,
-        reply_markup=kb.match_score_select(match_id, match["tournament_id"]),
+        reply_markup=kb.back_button(f"mm_control_{match['tournament_id']}"),
         parse_mode="HTML"
     )
+    await state.set_state(MatchResultStates.waiting_score)
     await callback.answer()
 
 
@@ -342,18 +343,31 @@ async def process_custom_score(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    match_id = data["match_id"]
-    actual_winner_pos = data.get("winner_position", 1)
+    match_id = data.get("match_id")
+    tournament_id = data.get("tournament_id")
+
+    if not match_id:
+        await state.clear()
+        await message.answer(f"{Emoji.CROSS} Ошибка: матч не найден!", parse_mode="HTML")
+        return
 
     match = await db.get_match(match_id)
+    if not match:
+        await state.clear()
+        await message.answer(
+            f"{Emoji.CROSS} Матч не найден!",
+            reply_markup=kb.back_button("admin_tournaments"),
+            parse_mode="HTML"
+        )
+        return
+
+    tournament_id = match["tournament_id"]
 
     # Определяем победителя по счёту
     if score1 > score2:
         winner_id = match["participant1_id"]
     else:
         winner_id = match["participant2_id"]
-
-    tournament_id = match["tournament_id"]
 
     # Используем complete_manual_match который обновляет статусы участников
     success = await db.complete_manual_match(match_id, winner_id, score1, score2)
@@ -373,20 +387,6 @@ async def process_custom_score(message: Message, state: FSMContext):
             reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
             parse_mode="HTML"
         )
-
-
-async def advance_winner(match: dict, winner_id: int) -> None:
-    """Провести победителя в следующий раунд."""
-    next_match = await db.get_next_match_for_winner(
-        match["tournament_id"],
-        match["round"],
-        match["match_number"]
-    )
-
-    if next_match:
-        # Определяем позицию (1 или 2) в следующем матче
-        position = 1 if match["match_number"] % 2 == 1 else 2
-        await db.update_match_participant(next_match["id"], position, winner_id)
 
 
 # ==================== КОНФИГ CYBERSHOKE ====================
@@ -833,6 +833,48 @@ async def callback_player_lobby(callback: CallbackQuery):
 
 # ==================== РУЧНАЯ СИСТЕМА МАТЧЕЙ ====================
 
+async def _show_mm_control(callback: CallbackQuery, tournament_id: int):
+    """Показать экран управления ручными матчами."""
+    tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.message.edit_text(
+            f"{Emoji.CROSS} Турнир не найден!",
+            reply_markup=kb.back_button("admin_tournaments"),
+            parse_mode="HTML"
+        )
+        return
+
+    standings = await db.get_tournament_standings(tournament_id)
+
+    # Подсчёт по статусам
+    ready_count = sum(1 for s in standings if s["status"] == "ready")
+    in_match_count = sum(1 for s in standings if s["status"] == "in_match")
+    eliminated_count = sum(1 for s in standings if s["status"] == "eliminated")
+    active_matches = await db.get_active_matches_count(tournament_id)
+
+    text = (
+        f"<b>🎮 Управление матчами</b>\n\n"
+        f"<b>Турнир:</b> {tournament['name']}\n\n"
+        f"🟢 Готовы: {ready_count}\n"
+        f"🔴 В матче: {in_match_count}\n"
+        f"❌ Выбыли: {eliminated_count}\n\n"
+        f"Активных матчей: {active_matches}"
+    )
+
+    # Проверка на завершение турнира
+    remaining = await db.count_remaining_participants(tournament_id)
+    if remaining == 1 and active_matches == 0:
+        text += f"\n\n{Emoji.TROPHY} <b>Остался 1 участник - можно завершить турнир!</b>"
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb.manual_match_control(
+            tournament_id, ready_count, in_match_count, eliminated_count, active_matches
+        ),
+        parse_mode="HTML"
+    )
+
+
 async def _get_participants_with_names(tournament_id: int) -> list[dict]:
     """Получить участников с именами для отображения."""
     tournament = await db.get_tournament(tournament_id)
@@ -864,36 +906,7 @@ async def callback_mm_control(callback: CallbackQuery):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    tournament = await db.get_tournament(tournament_id)
-    standings = await db.get_tournament_standings(tournament_id)
-
-    # Подсчёт по статусам
-    ready_count = sum(1 for s in standings if s["status"] == "ready")
-    in_match_count = sum(1 for s in standings if s["status"] == "in_match")
-    eliminated_count = sum(1 for s in standings if s["status"] == "eliminated")
-    active_matches = await db.get_active_matches_count(tournament_id)
-
-    text = (
-        f"<b>🎮 Управление матчами</b>\n\n"
-        f"<b>Турнир:</b> {tournament['name']}\n\n"
-        f"🟢 Готовы: {ready_count}\n"
-        f"🔴 В матче: {in_match_count}\n"
-        f"❌ Выбыли: {eliminated_count}\n\n"
-        f"Активных матчей: {active_matches}"
-    )
-
-    # Проверка на завершение турнира
-    remaining = await db.count_remaining_participants(tournament_id)
-    if remaining == 1 and active_matches == 0:
-        text += f"\n\n{Emoji.TROPHY} <b>Остался 1 участник - можно завершить турнир!</b>"
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=kb.manual_match_control(
-            tournament_id, ready_count, in_match_count, eliminated_count, active_matches
-        ),
-        parse_mode="HTML"
-    )
+    await _show_mm_control(callback, tournament_id)
     await callback.answer()
 
 
@@ -1102,8 +1115,7 @@ async def callback_mm_cancel(callback: CallbackQuery):
     if success:
         await callback.answer("Матч отменён!", show_alert=True)
         # Возвращаемся к управлению
-        callback.data = f"mm_control_{match['tournament_id']}"
-        await callback_mm_control(callback)
+        await _show_mm_control(callback, match['tournament_id'])
     else:
         await callback.answer("Не удалось отменить матч!", show_alert=True)
 
@@ -1145,14 +1157,17 @@ async def callback_mm_do_restore(callback: CallbackQuery):
         return
 
     tournament = await db.get_tournament(tournament_id)
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
     participant_type = "player" if tournament["format"] == "1v1" else "team"
 
     await db.restore_participant(tournament_id, participant_id, participant_type)
 
     await callback.answer("Участник возвращён в турнир!", show_alert=True)
-    # Возвращаемся к управлению
-    callback.data = f"mm_control_{tournament_id}"
-    await callback_mm_control(callback)
+    # Возвращаемся к управлению - показываем экран напрямую
+    await _show_mm_control(callback, tournament_id)
 
 
 @router.callback_query(F.data.regexp(r"^mm_participants_(\d+)$"))
