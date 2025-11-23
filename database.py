@@ -322,6 +322,12 @@ class Database:
             await self.conn.execute("ALTER TABLE matches ADD COLUMN scheduled_time TIMESTAMP")
             await self.conn.commit()
 
+        try:
+            await self.conn.execute("SELECT server_password FROM matches LIMIT 1")
+        except Exception:
+            await self.conn.execute("ALTER TABLE matches ADD COLUMN server_password TEXT")
+            await self.conn.commit()
+
         # Миграция для losses в tournament_participant_status
         try:
             await self.conn.execute("SELECT losses FROM tournament_participant_status LIMIT 1")
@@ -1667,6 +1673,105 @@ class Database:
             row = await cursor.fetchone()
             stats["active_bans"] = row["cnt"] if row else 0
 
+        # Статистика Stars (платные регистрации)
+        # Всего заработано Stars (из tournament_players)
+        async with self.conn.execute(
+            """SELECT COALESCE(SUM(t.entry_fee), 0) as total
+               FROM tournament_players tp
+               JOIN tournaments t ON tp.tournament_id = t.id
+               WHERE tp.payment_charge_id IS NOT NULL"""
+        ) as cursor:
+            row = await cursor.fetchone()
+            stars_total = row["total"] if row else 0
+
+        # Из tournament_teams
+        async with self.conn.execute(
+            """SELECT COALESCE(SUM(t.entry_fee), 0) as total
+               FROM tournament_teams tt
+               JOIN tournaments t ON tt.tournament_id = t.id
+               WHERE tt.payment_charge_id IS NOT NULL"""
+        ) as cursor:
+            row = await cursor.fetchone()
+            stars_total += row["total"] if row else 0
+
+        stats["stars_total"] = stars_total
+
+        # Stars за сегодня
+        async with self.conn.execute(
+            """SELECT COALESCE(SUM(t.entry_fee), 0) as total
+               FROM tournament_players tp
+               JOIN tournaments t ON tp.tournament_id = t.id
+               WHERE tp.payment_charge_id IS NOT NULL AND tp.registered_at >= ?""",
+            (today_start,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stars_today = row["total"] if row else 0
+
+        async with self.conn.execute(
+            """SELECT COALESCE(SUM(t.entry_fee), 0) as total
+               FROM tournament_teams tt
+               JOIN tournaments t ON tt.tournament_id = t.id
+               WHERE tt.payment_charge_id IS NOT NULL AND tt.registered_at >= ?""",
+            (today_start,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stars_today += row["total"] if row else 0
+
+        stats["stars_today"] = stars_today
+
+        # Stars за неделю
+        async with self.conn.execute(
+            """SELECT COALESCE(SUM(t.entry_fee), 0) as total
+               FROM tournament_players tp
+               JOIN tournaments t ON tp.tournament_id = t.id
+               WHERE tp.payment_charge_id IS NOT NULL AND tp.registered_at >= ?""",
+            (week_start,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stars_week = row["total"] if row else 0
+
+        async with self.conn.execute(
+            """SELECT COALESCE(SUM(t.entry_fee), 0) as total
+               FROM tournament_teams tt
+               JOIN tournaments t ON tt.tournament_id = t.id
+               WHERE tt.payment_charge_id IS NOT NULL AND tt.registered_at >= ?""",
+            (week_start,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stars_week += row["total"] if row else 0
+
+        stats["stars_week"] = stars_week
+
+        # Stars за месяц
+        async with self.conn.execute(
+            """SELECT COALESCE(SUM(t.entry_fee), 0) as total
+               FROM tournament_players tp
+               JOIN tournaments t ON tp.tournament_id = t.id
+               WHERE tp.payment_charge_id IS NOT NULL AND tp.registered_at >= ?""",
+            (month_start,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stars_month = row["total"] if row else 0
+
+        async with self.conn.execute(
+            """SELECT COALESCE(SUM(t.entry_fee), 0) as total
+               FROM tournament_teams tt
+               JOIN tournaments t ON tt.tournament_id = t.id
+               WHERE tt.payment_charge_id IS NOT NULL AND tt.registered_at >= ?""",
+            (month_start,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stars_month += row["total"] if row else 0
+
+        stats["stars_month"] = stars_month
+
+        # Количество платных турниров
+        async with self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM tournaments WHERE entry_fee > 0"
+        ) as cursor:
+            row = await cursor.fetchone()
+            stats["paid_tournaments"] = row["cnt"] if row else 0
+
         return stats
 
     # ==================== ОЧЕРЕДЬ МАТЧЕЙ ====================
@@ -1957,7 +2062,8 @@ class Database:
         participant1_id: int,
         participant2_id: int,
         participant_type: str,
-        server_link: str = None
+        server_link: str = None,
+        server_password: str = None
     ) -> int:
         """Создать матч вручную и сразу активировать."""
         from datetime import datetime
@@ -1974,10 +2080,10 @@ class Database:
         async with self.conn.execute(
             """INSERT INTO matches
                (tournament_id, round, match_number, participant1_id, participant2_id,
-                participant1_type, status, server_link, started_at)
-               VALUES (?, 1, ?, ?, ?, ?, 'active', ?, ?)""",
+                participant1_type, status, server_link, server_password, started_at)
+               VALUES (?, 1, ?, ?, ?, ?, 'active', ?, ?, ?)""",
             (tournament_id, match_number, participant1_id, participant2_id,
-             participant_type, server_link, datetime.now())
+             participant_type, server_link, server_password, datetime.now())
         ) as cursor:
             match_id = cursor.lastrowid
             await self.conn.commit()

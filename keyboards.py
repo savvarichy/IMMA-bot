@@ -772,6 +772,10 @@ class Keyboards:
             )
 
         builder.button(
+            text=f"{Emoji.PENCIL} Своя карта",
+            callback_data="t_map_custom"
+        )
+        builder.button(
             text=f"{Emoji.CHECK} Готово",
             callback_data="t_maps_done"
         )
@@ -779,7 +783,7 @@ class Keyboards:
             text=f"{Emoji.BACK} Назад",
             callback_data="admin_create_tournament"
         )
-        builder.adjust(4, 4, 2)
+        builder.adjust(4, 4, 1, 2)
         return builder.as_markup()
 
     @staticmethod
@@ -796,6 +800,10 @@ class Keyboards:
             )
 
         builder.button(
+            text=f"{Emoji.PENCIL} Своя карта",
+            callback_data=f"t_map_custom_edit_{tournament_id}" if tournament_id else "t_map_custom"
+        )
+        builder.button(
             text=f"{Emoji.CHECK} Сохранить",
             callback_data="t_maps_save"
         )
@@ -804,7 +812,7 @@ class Keyboards:
             text=f"{Emoji.BACK} Назад",
             callback_data=back_cb
         )
-        builder.adjust(4, 4, 2)
+        builder.adjust(4, 4, 1, 2)
         return builder.as_markup()
 
     @staticmethod
@@ -1200,38 +1208,18 @@ class Keyboards:
 
     @staticmethod
     def match_score_select(match_id: int, tournament_id: int) -> InlineKeyboardMarkup:
-        """Выбор счёта матча."""
+        """Выбор счёта матча — только ручной ввод."""
         builder = InlineKeyboardBuilder()
 
-        # Типичные счета для CS2
-        scores = [
-            ("16-0", 16, 0), ("16-1", 16, 1), ("16-2", 16, 2),
-            ("16-3", 16, 3), ("16-5", 16, 5), ("16-7", 16, 7),
-            ("16-9", 16, 9), ("16-10", 16, 10), ("16-12", 16, 12),
-            ("16-13", 16, 13), ("16-14", 16, 14),
-            ("19-17", 19, 17), ("22-20", 22, 20)
-        ]
-
-        for text, s1, s2 in scores:
-            # Победа первого участника
-            builder.button(
-                text=text,
-                callback_data=f"match_set_{match_id}_{s1}_{s2}_1"
-            )
-
         builder.button(
-            text=f"{Emoji.REFRESH} Победа второго",
-            callback_data=f"match_swap_{match_id}"
-        )
-        builder.button(
-            text=f"{Emoji.PENCIL} Свой счёт",
+            text=f"{Emoji.PENCIL} Ввести результат",
             callback_data=f"match_custom_{match_id}"
         )
         builder.button(
             text=f"{Emoji.BACK} Назад",
             callback_data=f"admin_t_manage_{tournament_id}"
         )
-        builder.adjust(4, 4, 4, 1, 2)
+        builder.adjust(1)
         return builder.as_markup()
 
     # ==================== АДМИН: ИГРОКИ ====================
@@ -1392,6 +1380,25 @@ class Keyboards:
             callback_data=f"admin_t_queue_{tournament_id}"
         )
         builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def match_password_choice(tournament_id: int, p1_id: int, p2_id: int) -> InlineKeyboardMarkup:
+        """Выбор: добавить пароль или создать без пароля."""
+        builder = InlineKeyboardBuilder()
+        builder.button(
+            text=f"{Emoji.KEY} Добавить пароль",
+            callback_data=f"mm_add_pwd_{tournament_id}_{p1_id}_{p2_id}"
+        )
+        builder.button(
+            text=f"{Emoji.PLAY} Без пароля",
+            callback_data=f"mm_no_pwd_{tournament_id}_{p1_id}_{p2_id}"
+        )
+        builder.button(
+            text=f"{Emoji.BACK} Отмена",
+            callback_data=f"mm_control_{tournament_id}"
+        )
+        builder.adjust(2, 1)
         return builder.as_markup()
 
     # ==================== ЛОББИ ====================

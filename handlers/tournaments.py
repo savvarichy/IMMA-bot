@@ -30,6 +30,7 @@ class CreateTournamentStates(StatesGroup):
     waiting_name = State()
     waiting_format = State()
     waiting_maps = State()
+    waiting_custom_map = State()
     waiting_participants = State()
     waiting_custom_participants = State()
     waiting_prize_type = State()
@@ -53,6 +54,7 @@ class EditTournamentStates(StatesGroup):
     waiting_prize_1 = State()
     waiting_prize_2 = State()
     waiting_prize_3 = State()
+    waiting_custom_map = State()
 
 
 class BroadcastStates(StatesGroup):
@@ -1062,8 +1064,77 @@ async def callback_admin_finish_tournament(callback: CallbackQuery):
     except Exception as e:
         channel_result = f"\n\n{Emoji.WARNING} Канал: ошибка - {str(e)}"
 
+    # Отправляем уведомления о местах всем участникам
+    notifications_sent = 0
+    notifications_failed = 0
+    for i, s in enumerate(sorted_standings):
+        place = i + 1
+        pid = s["participant_id"]
+        name = participants_names.get(pid, f"ID:{pid}")
+
+        # Определяем иконку места
+        if place == 1:
+            place_text = "🥇 1 место"
+        elif place == 2:
+            place_text = "🥈 2 место"
+        elif place == 3:
+            place_text = "🥉 3 место"
+        else:
+            place_text = f"📍 {place} место"
+
+        # Формируем сообщение
+        notif_text = (
+            f"<b>🏆 Турнир завершён!</b>\n\n"
+            f"<b>{escape_html(tournament['name'])}</b>\n\n"
+            f"Ваш результат: <b>{place_text}</b>\n"
+            f"Побед: {s.get('wins', 0)} | Поражений: {s.get('losses', 0)}"
+        )
+
+        # Добавляем приз если есть
+        if i < len(prizes) and prizes[i]:
+            notif_text += f"\n\n🎁 <b>Приз:</b> {escape_html(prizes[i])}"
+
+            # Добавляем контакты админов призов
+            prize_admins = await db.get_prize_admins()
+            if prize_admins:
+                notif_text += f"\n\n📞 <b>Для получения приза:</b>\n"
+                for admin in prize_admins:
+                    notif_text += f"@{admin}\n"
+                notif_text += "\n⚠️ <i>Не доверяйте другим контактам!</i>"
+
+        # Отправляем уведомление
+        try:
+            if s["participant_type"] == "player":
+                player = await db.get_player_by_id(pid)
+                if player:
+                    await callback.bot.send_message(
+                        player["telegram_id"],
+                        notif_text,
+                        parse_mode="HTML"
+                    )
+                    notifications_sent += 1
+            else:
+                # Команда - отправляем всем членам
+                team_members = await db.get_team_members(pid)
+                for member in team_members:
+                    try:
+                        await callback.bot.send_message(
+                            member["telegram_id"],
+                            notif_text,
+                            parse_mode="HTML"
+                        )
+                        notifications_sent += 1
+                    except Exception:
+                        notifications_failed += 1
+        except Exception:
+            notifications_failed += 1
+
+    notif_result = f"\n{Emoji.BELL} Уведомлений: {notifications_sent} отправлено"
+    if notifications_failed > 0:
+        notif_result += f", {notifications_failed} не доставлено"
+
     await callback.message.edit_text(
-        text + channel_result,
+        text + channel_result + notif_result,
         reply_markup=kb.back_button("admin_tournaments"),
         parse_mode="HTML"
     )
@@ -1238,10 +1309,59 @@ async def process_tournament_format(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@router.callback_query(F.data == "t_map_custom", CreateTournamentStates.waiting_maps)
+async def process_map_custom(callback: CallbackQuery, state: FSMContext):
+    """Запросить ввод своей карты."""
+    await callback.message.edit_text(
+        f"<b>{Emoji.PENCIL} Своя карта</b>\n\n"
+        f"Введите название карты (например: de_dust2 или workshop_map):",
+        reply_markup=kb.back_button("admin_create_tournament"),
+        parse_mode="HTML"
+    )
+    await state.set_state(CreateTournamentStates.waiting_custom_map)
+    await callback.answer()
+
+
+@router.message(CreateTournamentStates.waiting_custom_map)
+async def process_custom_map_input(message: Message, state: FSMContext):
+    """Обработка ввода своей карты."""
+    custom_map = message.text.strip()
+
+    if len(custom_map) < 2:
+        await message.answer(
+            f"{Emoji.CROSS} Название карты слишком короткое!",
+            parse_mode="HTML"
+        )
+        return
+
+    data = await state.get_data()
+    maps = data.get("maps", [])
+
+    if custom_map not in maps:
+        maps.append(custom_map)
+
+    await state.update_data(maps=maps)
+    await state.set_state(CreateTournamentStates.waiting_maps)
+
+    await message.answer(
+        f"<b>{Emoji.PLUS} Создание турнира</b>\n\n"
+        f"<b>Шаг 3:</b> Выберите карты (можно несколько):\n"
+        f"Выбрано: {len(maps)}\n"
+        f"Добавлена: {custom_map}",
+        reply_markup=kb.maps_select(maps),
+        parse_mode="HTML"
+    )
+
+
 @router.callback_query(F.data.startswith("t_map_"), CreateTournamentStates.waiting_maps)
 async def process_map_toggle(callback: CallbackQuery, state: FSMContext):
     """Переключение карты."""
     map_name = callback.data.replace("t_map_", "")
+
+    # Пропускаем callback для custom (обрабатывается отдельно)
+    if map_name == "custom":
+        return
+
     data = await state.get_data()
     maps = data.get("maps", [])
 
@@ -2408,6 +2528,12 @@ async def callback_admin_stats(callback: CallbackQuery):
 
     text = (
         f"<b>{Emoji.CHART} Статистика</b>\n\n"
+        f"<b>⭐ Telegram Stars:</b>\n"
+        f"• Всего заработано: <b>{stats.get('stars_total', 0)} ⭐</b>\n"
+        f"• За сегодня: +{stats.get('stars_today', 0)} ⭐\n"
+        f"• За неделю: +{stats.get('stars_week', 0)} ⭐\n"
+        f"• За месяц: +{stats.get('stars_month', 0)} ⭐\n"
+        f"• Платных турниров: {stats.get('paid_tournaments', 0)}\n\n"
         f"<b>{Emoji.PEOPLE} Игроки:</b>\n"
         f"• Всего: {stats['total_players']}\n"
         f"• За сегодня: +{stats.get('players_today', 0)}\n"
@@ -2631,6 +2757,10 @@ async def callback_admin_edit_maps(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("t_map_"))
 async def callback_edit_map_toggle(callback: CallbackQuery, state: FSMContext):
     """Переключение карты при редактировании."""
+    # Пропускаем callback для своей карты (обрабатывается отдельно)
+    if callback.data.startswith("t_map_custom_edit_"):
+        return
+
     data = await state.get_data()
     if "edit_tournament_id" not in data:
         # Это может быть создание турнира, пропускаем
@@ -2700,6 +2830,57 @@ async def callback_edit_maps_done(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer("Карты обновлены!", show_alert=True)
     await _show_tournament_manage(callback, tournament_id)
+
+
+@router.callback_query(F.data.regexp(r"^t_map_custom_edit_(\d+)$"))
+async def callback_edit_map_custom(callback: CallbackQuery, state: FSMContext):
+    """Запросить ввод своей карты при редактировании."""
+    tournament_id = int(callback.data.split("_")[-1])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.update_data(edit_tournament_id=tournament_id)
+    await callback.message.edit_text(
+        f"<b>{Emoji.PENCIL} Своя карта</b>\n\n"
+        f"Введите название карты (например: de_dust2 или workshop_map):",
+        reply_markup=kb.back_button(f"admin_t_edit_maps_{tournament_id}"),
+        parse_mode="HTML"
+    )
+    await state.set_state(EditTournamentStates.waiting_custom_map)
+    await callback.answer()
+
+
+@router.message(EditTournamentStates.waiting_custom_map)
+async def process_edit_custom_map_input(message: Message, state: FSMContext):
+    """Обработка ввода своей карты при редактировании."""
+    custom_map = message.text.strip()
+
+    if len(custom_map) < 2:
+        await message.answer(
+            f"{Emoji.CROSS} Название карты слишком короткое!",
+            parse_mode="HTML"
+        )
+        return
+
+    data = await state.get_data()
+    tournament_id = data.get("edit_tournament_id")
+    selected_maps = data.get("selected_maps", [])
+
+    if custom_map not in selected_maps:
+        selected_maps.append(custom_map)
+
+    await state.update_data(selected_maps=selected_maps)
+    await state.set_state(None)  # Сбрасываем состояние
+
+    await message.answer(
+        f"{Emoji.MAP} <b>Выберите карты:</b>\n\n"
+        f"Выбрано: {', '.join(selected_maps) if selected_maps else 'нет'}\n"
+        f"Добавлена: {custom_map}",
+        reply_markup=kb.map_select(selected_maps, tournament_id),
+        parse_mode="HTML"
+    )
 
 
 @router.callback_query(F.data.regexp(r"^admin_t_edit_participants_(\d+)$"))

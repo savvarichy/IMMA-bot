@@ -1231,6 +1231,7 @@ async def callback_mm_match_view(callback: CallbackQuery):
 class ManualMatchLinkStates(StatesGroup):
     """Состояния ввода ссылки для ручного матча."""
     waiting_link = State()
+    waiting_password = State()
 
 
 @router.callback_query(F.data.regexp(r"^mm_link_(\d+)_(\d+)_(\d+)$"))
@@ -1268,7 +1269,7 @@ async def callback_mm_link_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(ManualMatchLinkStates.waiting_link)
 async def process_mm_link(message: Message, state: FSMContext):
-    """Обработка ссылки и создание матча."""
+    """Обработка ссылки — показываем кнопки для пароля."""
     # Проверка прав администратора
     if not await db.is_admin(message.from_user.id):
         await state.clear()
@@ -1297,11 +1298,122 @@ async def process_mm_link(message: Message, state: FSMContext):
         )
         return
 
+    # Сохраняем ссылку и показываем кнопки для пароля
+    await state.update_data(mm_server_link=server_link)
+
+    participants = await _get_participants_with_names(tournament_id)
+    p1_name = next((p["name"] for p in participants if p["participant_id"] == p1_id), "?")
+    p2_name = next((p["name"] for p in participants if p["participant_id"] == p2_id), "?")
+
+    await message.answer(
+        f"<b>🔗 Ссылка сохранена!</b>\n\n"
+        f"<b>{p1_name}</b> vs <b>{p2_name}</b>\n"
+        f"<b>Сервер:</b> {server_link}\n\n"
+        f"Добавить пароль к серверу?",
+        reply_markup=kb.match_password_choice(tournament_id, p1_id, p2_id),
+        parse_mode="HTML"
+    )
+    await state.set_state(None)  # Убираем состояние, ждём кнопку
+
+
+@router.callback_query(F.data.regexp(r"^mm_add_pwd_(\d+)_(\d+)_(\d+)$"))
+async def callback_mm_add_password(callback: CallbackQuery, state: FSMContext):
+    """Запросить ввод пароля."""
+    parts = callback.data.split("_")
+    tournament_id = int(parts[3])
+    p1_id = int(parts[4])
+    p2_id = int(parts[5])
+
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.update_data(
+        mm_tournament_id=tournament_id,
+        mm_p1_id=p1_id,
+        mm_p2_id=p2_id
+    )
+
+    await callback.message.edit_text(
+        f"<b>🔑 Введите пароль сервера:</b>",
+        reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+        parse_mode="HTML"
+    )
+    await state.set_state(ManualMatchLinkStates.waiting_password)
+    await callback.answer()
+
+
+@router.message(ManualMatchLinkStates.waiting_password)
+async def process_mm_password(message: Message, state: FSMContext):
+    """Обработка пароля и создание матча."""
+    if not await db.is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("Нет доступа!")
+        return
+
+    data = await state.get_data()
+    server_password = message.text.strip()
+
+    await _create_match_with_notification(
+        message, state, data, server_password
+    )
+
+
+@router.callback_query(F.data.regexp(r"^mm_no_pwd_(\d+)_(\d+)_(\d+)$"))
+async def callback_mm_no_password(callback: CallbackQuery, state: FSMContext):
+    """Создать матч без пароля."""
+    if not await db.is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    data = await state.get_data()
+
+    await _create_match_with_notification(
+        callback, state, data, None
+    )
+
+
+async def _create_match_with_notification(
+    event,
+    state: FSMContext,
+    data: dict,
+    server_password: str = None
+):
+    """Создание матча и отправка уведомлений."""
+    tournament_id = data.get("mm_tournament_id")
+    p1_id = data.get("mm_p1_id")
+    p2_id = data.get("mm_p2_id")
+    server_link = data.get("mm_server_link")
+
+    tournament = await db.get_tournament(tournament_id)
+    participant_type = "player" if tournament["format"] == "1v1" else "team"
+
+    # Проверяем что оба участника всё ещё ready
+    p1_status = await db.get_participant_status(tournament_id, p1_id, participant_type)
+    p2_status = await db.get_participant_status(tournament_id, p2_id, participant_type)
+
+    if not p1_status or p1_status["status"] != "ready" or not p2_status or p2_status["status"] != "ready":
+        await state.clear()
+        error_text = f"{Emoji.CROSS} Один из участников уже не готов. Матч не создан."
+        if isinstance(event, Message):
+            await event.answer(
+                error_text,
+                reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+                parse_mode="HTML"
+            )
+        else:
+            await event.message.edit_text(
+                error_text,
+                reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+                parse_mode="HTML"
+            )
+        return
+
     await state.clear()
 
-    # Создаём матч с ссылкой
+    # Создаём матч с ссылкой и паролем
     match_id = await db.create_manual_match(
-        tournament_id, p1_id, p2_id, participant_type, server_link
+        tournament_id, p1_id, p2_id, participant_type, server_link, server_password
     )
 
     # Получаем имена для уведомлений
@@ -1309,15 +1421,18 @@ async def process_mm_link(message: Message, state: FSMContext):
     p1_name = next((p["name"] for p in participants if p["participant_id"] == p1_id), "?")
     p2_name = next((p["name"] for p in participants if p["participant_id"] == p2_id), "?")
 
-    # Отправляем уведомления участникам
-    bot = message.bot
+    # Формируем текст уведомления
     notification_text = (
         f"<b>⚔️ Ваш матч начался!</b>\n\n"
         f"<b>{p1_name}</b> vs <b>{p2_name}</b>\n\n"
         f"<b>Турнир:</b> {tournament['name']}\n"
-        f"<b>Сервер:</b> {server_link}"
+        f"<b>🔗 Сервер:</b> <code>{server_link}</code>"
     )
+    if server_password:
+        notification_text += f"\n<b>🔑 Пароль:</b> <code>{server_password}</code>"
 
+    # Отправляем уведомления участникам
+    bot = event.bot if hasattr(event, 'bot') else event.message.bot
     if tournament["format"] == "1v1":
         for pid in [p1_id, p2_id]:
             player = await db.get_player_by_id(pid)
@@ -1335,11 +1450,25 @@ async def process_mm_link(message: Message, state: FSMContext):
                 except Exception:
                     pass
 
-    await message.answer(
+    # Формируем ответ админу
+    admin_text = (
         f"<b>{Emoji.CHECK} Матч создан!</b>\n\n"
         f"<b>{p1_name}</b> vs <b>{p2_name}</b>\n\n"
-        f"Ссылка: {server_link}\n"
-        f"Уведомления отправлены участникам.",
-        reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
-        parse_mode="HTML"
+        f"<b>Ссылка:</b> {server_link}\n"
     )
+    if server_password:
+        admin_text += f"<b>Пароль:</b> {server_password}\n"
+    admin_text += f"\nУведомления отправлены участникам."
+
+    if isinstance(event, Message):
+        await event.answer(
+            admin_text,
+            reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+            parse_mode="HTML"
+        )
+    else:
+        await event.message.edit_text(
+            admin_text,
+            reply_markup=kb.back_button(f"mm_control_{tournament_id}"),
+            parse_mode="HTML"
+        )
