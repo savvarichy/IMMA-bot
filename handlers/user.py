@@ -367,19 +367,31 @@ async def callback_skip_contact(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await state.clear()
 
+    nickname = data.get("nickname")
+    steam_link = data.get("steam_link")
+
+    if not nickname or not steam_link:
+        await callback.message.edit_text(
+            f"{Emoji.CROSS} Ошибка регистрации. Попробуйте снова.",
+            reply_markup=kb.main_menu(),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+        return
+
     # Создаём игрока без контакта
     await db.create_player(
         telegram_id=callback.from_user.id,
         username=callback.from_user.username,
-        nickname=data["nickname"],
-        steam_link=data["steam_link"],
+        nickname=nickname,
+        steam_link=steam_link,
         contact=f"@{callback.from_user.username}" if callback.from_user.username else "Не указан"
     )
 
     text = (
         f"{Emoji.CHECK} <b>Регистрация завершена!</b>\n\n"
-        f"{Emoji.GAME} <b>Никнейм:</b> {escape_html(data['nickname'])}\n"
-        f"{Emoji.LINK} <b>Steam:</b> {data['steam_link']}\n\n"
+        f"{Emoji.GAME} <b>Никнейм:</b> {escape_html(nickname)}\n"
+        f"{Emoji.LINK} <b>Steam:</b> {steam_link}\n\n"
         f"Теперь вы можете участвовать в турнирах!"
     )
 
@@ -491,19 +503,30 @@ async def process_contact(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
 
+    nickname = data.get("nickname")
+    steam_link = data.get("steam_link")
+
+    if not nickname or not steam_link:
+        await message.answer(
+            f"{Emoji.CROSS} Ошибка регистрации. Попробуйте снова.",
+            reply_markup=kb.main_menu(),
+            parse_mode="HTML"
+        )
+        return
+
     # Создаём игрока
     await db.create_player(
         telegram_id=message.from_user.id,
         username=message.from_user.username,
-        nickname=data["nickname"],
-        steam_link=data["steam_link"],
+        nickname=nickname,
+        steam_link=steam_link,
         contact=contact
     )
 
     text = (
         f"{Emoji.CHECK} <b>Регистрация завершена!</b>\n\n"
-        f"{Emoji.GAME} <b>Никнейм:</b> {escape_html(data['nickname'])}\n"
-        f"{Emoji.LINK} <b>Steam:</b> {data['steam_link']}\n"
+        f"{Emoji.GAME} <b>Никнейм:</b> {escape_html(nickname)}\n"
+        f"{Emoji.LINK} <b>Steam:</b> {steam_link}\n"
         f"{Emoji.SEND} <b>Контакт:</b> {escape_html(contact)}\n\n"
         f"Теперь вы можете участвовать в турнирах!"
     )

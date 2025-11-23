@@ -84,7 +84,8 @@ async def _show_tournament_manage(callback: CallbackQuery, tournament_id: int) -
     entry_fee = tournament.get("entry_fee", 0)
     if entry_fee > 0:
         fees_info = await db.get_tournament_collected_fees(tournament_id)
-        text += f"\n\n{Emoji.STAR} <b>Собрано взносов:</b> {fees_info['total']} ⭐ ({fees_info['count']} шт.)"
+        if fees_info:
+            text += f"\n\n{Emoji.STAR} <b>Собрано взносов:</b> {fees_info['total']} ⭐ ({fees_info['count']} шт.)"
 
     # Проверяем статус участия админа как игрока
     is_registered = False

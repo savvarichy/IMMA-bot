@@ -133,17 +133,34 @@ async def process_team_name(message: Message, state: FSMContext):
     await state.clear()
 
     player = await db.get_player(message.from_user.id)
+    if not player:
+        await message.answer(
+            f"{Emoji.CROSS} Вы не зарегистрированы!",
+            reply_markup=kb.main_menu(),
+            parse_mode="HTML"
+        )
+        return
+
+    team_format = data.get("format")
+    if not team_format or team_format not in config.TOURNAMENT_FORMATS:
+        await message.answer(
+            f"{Emoji.CROSS} Ошибка: неверный формат команды!",
+            reply_markup=kb.main_menu(),
+            parse_mode="HTML"
+        )
+        return
+
     invite_code = generate_invite_code()
 
     team_id = await db.create_team(
         name=name,
         captain_id=player["id"],
-        format=data["format"],
+        format=team_format,
         invite_code=invite_code
     )
 
-    format_name = config.TOURNAMENT_FORMATS[data["format"]]["name"]
-    team_size = config.TOURNAMENT_FORMATS[data["format"]]["team_size"]
+    format_name = config.TOURNAMENT_FORMATS[team_format]["name"]
+    team_size = config.TOURNAMENT_FORMATS[team_format]["team_size"]
 
     await message.answer(
         f"{Emoji.CHECK} <b>Команда создана!</b>\n\n"
@@ -317,7 +334,7 @@ async def callback_team_new_invite(callback: CallbackQuery):
     player = await db.get_player(callback.from_user.id)
     team = await db.get_team(team_id)
 
-    if not team or team["captain_id"] != player["id"]:
+    if not player or not team or team["captain_id"] != player["id"]:
         await callback.answer("Вы не капитан этой команды!", show_alert=True)
         return
 
@@ -346,7 +363,7 @@ async def callback_team_kick(callback: CallbackQuery):
     player = await db.get_player(callback.from_user.id)
     team = await db.get_team(team_id)
 
-    if not team or team["captain_id"] != player["id"]:
+    if not player or not team or team["captain_id"] != player["id"]:
         await callback.answer("Вы не капитан этой команды!", show_alert=True)
         return
 
@@ -375,7 +392,7 @@ async def callback_team_dokick(callback: CallbackQuery):
     player = await db.get_player(callback.from_user.id)
     team = await db.get_team(team_id)
 
-    if not team or team["captain_id"] != player["id"]:
+    if not player or not team or team["captain_id"] != player["id"]:
         await callback.answer("Вы не капитан этой команды!", show_alert=True)
         return
 
@@ -410,7 +427,7 @@ async def callback_team_transfer(callback: CallbackQuery):
     player = await db.get_player(callback.from_user.id)
     team = await db.get_team(team_id)
 
-    if not team or team["captain_id"] != player["id"]:
+    if not player or not team or team["captain_id"] != player["id"]:
         await callback.answer("Вы не капитан этой команды!", show_alert=True)
         return
 
@@ -439,7 +456,7 @@ async def callback_team_dotransfer(callback: CallbackQuery):
     player = await db.get_player(callback.from_user.id)
     team = await db.get_team(team_id)
 
-    if not team or team["captain_id"] != player["id"]:
+    if not player or not team or team["captain_id"] != player["id"]:
         await callback.answer("Вы не капитан этой команды!", show_alert=True)
         return
 
@@ -475,7 +492,7 @@ async def callback_team_disband(callback: CallbackQuery):
     player = await db.get_player(callback.from_user.id)
     team = await db.get_team(team_id)
 
-    if not team or team["captain_id"] != player["id"]:
+    if not player or not team or team["captain_id"] != player["id"]:
         await callback.answer("Вы не капитан этой команды!", show_alert=True)
         return
 
@@ -500,7 +517,7 @@ async def callback_team_dodelete(callback: CallbackQuery):
     player = await db.get_player(callback.from_user.id)
     team = await db.get_team(team_id)
 
-    if not team or team["captain_id"] != player["id"]:
+    if not player or not team or team["captain_id"] != player["id"]:
         await callback.answer("Вы не капитан этой команды!", show_alert=True)
         return
 
@@ -546,8 +563,8 @@ async def callback_team_doleave(callback: CallbackQuery):
     player = await db.get_player(callback.from_user.id)
     team = await db.get_team(team_id)
 
-    if not team:
-        await callback.answer("Команда не найдена!", show_alert=True)
+    if not player or not team:
+        await callback.answer("Ошибка: данные не найдены!", show_alert=True)
         return
 
     await db.remove_team_member(team_id, player["id"])
