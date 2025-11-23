@@ -28,6 +28,7 @@ class Emoji:
     BELL = "🔔"
     GEAR = "⚙️"
     PENCIL = "✏️"
+    EDIT = "✏️"
     TRASH = "🗑️"
     LOCK = "🔒"
     UNLOCK = "🔓"
