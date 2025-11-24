@@ -897,6 +897,11 @@ async def callback_admin_start_tournament(callback: CallbackQuery):
     await db.update_tournament_status(tournament_id, "active")
     await db.log_action(callback.from_user.id, "tournament_start", f"ID: {tournament_id}")
 
+    # Отправляем уведомления участникам
+    from services.notifications import NotificationService
+    notification_service = NotificationService(callback.bot)
+    await notification_service.notify_tournament_start(tournament_id)
+
     await callback.answer("Турнир начался! Используйте 'Управление матчами' для создания матчей.", show_alert=True)
 
     await _show_tournament_manage(callback, tournament_id)

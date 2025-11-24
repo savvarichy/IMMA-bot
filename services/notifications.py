@@ -80,7 +80,7 @@ class NotificationService:
         text = (
             f"{Emoji.FIRE} <b>Турнир начался!</b>\n\n"
             f"{Emoji.TROPHY} <b>{escape_html(tournament['name'])}</b>\n\n"
-            f"Проверьте своего соперника в первом раунде!"
+            f"Ожидайте свой матч, администратор скоро назначит соперника."
         )
 
         return await self._notify_tournament_participants(tournament_id, text)
