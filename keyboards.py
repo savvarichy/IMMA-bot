@@ -19,7 +19,7 @@ class Emoji:
     CROSS = "❌"
     WARNING = "⚠️"
     INFO = "ℹ️"
-    STAR = "⭐"
+    STAR = "💵"
     FIRE = "🔥"
     TROPHY = "🏆"
     MEDAL = "🥇"
