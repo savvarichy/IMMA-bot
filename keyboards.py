@@ -881,14 +881,14 @@ class Keyboards:
 
     @staticmethod
     def entry_fee_select() -> InlineKeyboardMarkup:
-        """Выбор взноса за участие в Stars."""
+        """Выбор взноса за участие."""
         builder = InlineKeyboardBuilder()
 
         builder.button(text="Бесплатно", callback_data="t_fee_0")
-        builder.button(text="10 ⭐", callback_data="t_fee_10")
-        builder.button(text="25 ⭐", callback_data="t_fee_25")
-        builder.button(text="50 ⭐", callback_data="t_fee_50")
-        builder.button(text="100 ⭐", callback_data="t_fee_100")
+        builder.button(text="10 💵", callback_data="t_fee_10")
+        builder.button(text="25 💵", callback_data="t_fee_25")
+        builder.button(text="50 💵", callback_data="t_fee_50")
+        builder.button(text="100 💵", callback_data="t_fee_100")
         builder.button(text="Другое...", callback_data="t_fee_custom")
         builder.button(
             text=f"{Emoji.BACK} Назад",

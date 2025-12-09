@@ -85,7 +85,7 @@ async def _show_tournament_manage(callback: CallbackQuery, tournament_id: int) -
     if entry_fee > 0:
         fees_info = await db.get_tournament_collected_fees(tournament_id)
         if fees_info:
-            text += f"\n\n{Emoji.STAR} <b>Собрано взносов:</b> {fees_info['total']} ⭐ ({fees_info['count']} шт.)"
+            text += f"\n\n{Emoji.STAR} <b>Собрано взносов:</b> {fees_info['total']} 💵 ({fees_info['count']} шт.)"
 
     # Проверяем статус участия админа как игрока
     is_registered = False
@@ -644,7 +644,7 @@ async def process_successful_payment(message: Message):
             await message.answer(
                 f"{Emoji.CHECK} <b>Оплата прошла успешно!</b>\n\n"
                 f"Вы зарегистрированы на турнир «{tournament['name']}».\n"
-                f"Взнос: {payment.total_amount} ⭐",
+                f"Взнос: {payment.total_amount} ",
                 parse_mode="HTML"
             )
             await _update_channel_post_if_exists(tournament_id, message.bot)
